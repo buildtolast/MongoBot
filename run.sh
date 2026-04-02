@@ -130,7 +130,8 @@ run_cargo() {
 run_docker() {
     print_config
 
-    echo -e "${GREEN}Starting with Docker Compose (bot + mongo + ollama)...${NC}"
+    echo -e "${GREEN}Starting with Docker Compose (bot + mongo)...${NC}"
+    echo -e "${YELLOW}Note: Ollama must be running on the host machine${NC}"
     echo -e "Dashboard will be at: ${CYAN}http://localhost:${PORT}${NC}"
     echo ""
 
@@ -139,17 +140,10 @@ run_docker() {
     echo -e "${GREEN}Docker containers started.${NC}"
     echo ""
 
-    # Pull the Ollama model if not already present
-    echo -e "${YELLOW}Ensuring Ollama model '${OLLAMA_MODEL}' is available...${NC}"
-    echo -e "(This may take a while on first run)"
-    docker compose exec ollama ollama pull "${OLLAMA_MODEL}" 2>/dev/null || \
-        echo -e "${YELLOW}Could not pull model — Ollama may still be starting. Try: docker compose exec ollama ollama pull ${OLLAMA_MODEL}${NC}"
-    echo ""
-
     echo -e "${GREEN}Services:${NC}"
     echo -e "  Bot:     ${CYAN}http://localhost:${PORT}${NC}"
-    echo -e "  Ollama:  ${CYAN}http://localhost:11434${NC}"
-    echo -e "  MongoDB: ${CYAN}mongodb://localhost:27017${NC}"
+    echo -e "  MongoDB: ${CYAN}mongodb://localhost:27017${NC} (Docker)"
+    echo -e "  Ollama:  ${CYAN}http://localhost:11434${NC} (host machine)"
     echo ""
     echo -e "View logs: ${YELLOW}docker compose logs -f bot${NC}"
 

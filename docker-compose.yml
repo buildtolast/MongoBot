@@ -6,7 +6,9 @@ services:
     environment:
       MONGO_URI: mongodb://mongo:27017
       MONGO_DB_NAME: myapp
-      OLLAMA_URL: http://ollama:11434
+      # Ollama runs on the host machine, not in Docker.
+      # On macOS Docker, host.docker.internal resolves to the host.
+      OLLAMA_URL: http://host.docker.internal:11434
       OLLAMA_MODEL: qwen3-coder:30b
       LLM_PROVIDER: ollama
       HOST: 0.0.0.0
@@ -17,16 +19,6 @@ services:
     depends_on:
       mongo:
         condition: service_started
-      ollama:
-        condition: service_started
-    restart: unless-stopped
-
-  ollama:
-    image: ollama/ollama:latest
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama_data:/root/.ollama
     restart: unless-stopped
 
   mongo:
@@ -38,5 +30,4 @@ services:
     restart: unless-stopped
 
 volumes:
-  ollama_data:
   mongo_data:

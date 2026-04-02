@@ -4,11 +4,10 @@ use crate::error::AppError;
 
 /// LLM client supporting multiple providers.
 pub struct LlmClient {
-    ollama: Option<ollama_rs::Ollama>,
-    #[allow(dead_code)] // Used when cloud LLM fallback is implemented
     http: reqwest::Client,
     provider: LlmProvider,
     model: String,
+    ollama_url: String,
     #[allow(dead_code)]
     api_key: Option<String>,
 }
@@ -16,15 +15,6 @@ pub struct LlmClient {
 impl LlmClient {
     /// Create a new LLM client based on configuration.
     pub fn new(config: &AppConfig) -> Self {
-        let ollama = if config.llm_provider == LlmProvider::Ollama {
-            // Parse host and port from the ollama_url
-            let url = &config.ollama_url;
-            let (host, port) = parse_ollama_url(url);
-            Some(ollama_rs::Ollama::new(host, port))
-        } else {
-            None
-        };
-
         let model = match config.llm_provider {
             LlmProvider::Ollama => config.ollama_model.clone(),
             _ => config
@@ -34,10 +24,13 @@ impl LlmClient {
         };
 
         Self {
-            ollama,
-            http: reqwest::Client::new(),
+            http: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(180))
+                .build()
+                .unwrap_or_default(),
             provider: config.llm_provider,
             model,
+            ollama_url: config.ollama_url.clone(),
             api_key: config.cloud_llm_api_key.clone(),
         }
     }
@@ -59,24 +52,47 @@ impl LlmClient {
         parse_llm_response(&raw)
     }
 
-    /// Call Ollama for text generation.
+    /// Call Ollama for text generation via HTTP API directly.
     async fn call_ollama(&self, prompt: &str) -> Result<String, AppError> {
-        let ollama = self
-            .ollama
-            .as_ref()
-            .ok_or_else(|| AppError::Internal("Ollama client not initialized".into()))?;
+        let url = format!("{}/api/generate", self.ollama_url.trim_end_matches('/'));
 
-        use ollama_rs::generation::completion::request::GenerationRequest;
+        let body = serde_json::json!({
+            "model": self.model,
+            "prompt": prompt,
+            "stream": false,
+            "format": "json"
+        });
 
-        let request = GenerationRequest::new(self.model.clone(), prompt.to_string())
-            .format(ollama_rs::generation::parameters::FormatType::Json);
+        tracing::debug!(url = %url, model = %self.model, "Calling Ollama");
 
-        let response = ollama
-            .generate(request)
+        let response = self
+            .http
+            .post(&url)
+            .json(&body)
+            .send()
             .await
-            .map_err(|e| AppError::LlmParse(format!("Ollama generation failed: {e}")))?;
+            .map_err(|e| AppError::LlmParse(format!("Ollama request failed: {e}")))?;
 
-        Ok(response.response)
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.text().await.unwrap_or_default();
+            return Err(AppError::LlmParse(format!(
+                "Ollama returned {status}: {text}"
+            )));
+        }
+
+        #[derive(serde::Deserialize)]
+        struct OllamaResponse {
+            response: String,
+        }
+
+        let parsed: OllamaResponse = response
+            .json()
+            .await
+            .map_err(|e| AppError::LlmParse(format!("Failed to parse Ollama response: {e}")))?;
+
+        tracing::debug!(response_len = parsed.response.len(), "Ollama response received");
+        Ok(parsed.response)
     }
 
     /// Call Anthropic API (stub — to be implemented with real API).
@@ -90,31 +106,6 @@ impl LlmClient {
     }
 }
 
-/// Parse an Ollama URL like "http://localhost:11434" into (host, port).
-fn parse_ollama_url(url: &str) -> (String, u16) {
-    // Manual parsing to avoid a `url` crate dependency.
-    // Expected format: "http://host:port" or "http://host"
-    let (scheme, rest) = if let Some(stripped) = url.strip_prefix("https://") {
-        ("https", stripped)
-    } else if let Some(stripped) = url.strip_prefix("http://") {
-        ("http", stripped)
-    } else {
-        ("http", url)
-    };
-
-    let (host_part, port) = if let Some(colon_pos) = rest.rfind(':') {
-        let port_str = &rest[colon_pos + 1..];
-        if let Ok(p) = port_str.parse::<u16>() {
-            (&rest[..colon_pos], p)
-        } else {
-            (rest, 11434)
-        }
-    } else {
-        (rest, 11434)
-    };
-
-    (format!("{scheme}://{host_part}"), port)
-}
 
 /// Build the system prompt for NL-to-MongoDB translation.
 pub(crate) fn build_prompt(query: &str, schema: &str) -> String {
@@ -204,17 +195,6 @@ mod tests {
     fn test_strip_no_fences() {
         let input = "{\"collection\": \"test\"}";
         assert_eq!(strip_markdown_fences(input), "{\"collection\": \"test\"}");
-    }
-
-    #[test]
-    fn test_parse_ollama_url() {
-        let (host, port) = parse_ollama_url("http://localhost:11434");
-        assert_eq!(host, "http://localhost");
-        assert_eq!(port, 11434);
-
-        let (host, port) = parse_ollama_url("http://myhost:9999");
-        assert_eq!(host, "http://myhost");
-        assert_eq!(port, 9999);
     }
 
     #[test]
