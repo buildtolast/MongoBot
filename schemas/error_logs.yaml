@@ -1,0 +1,23 @@
+name: error_logs
+description: Application error and exception logs
+fields:
+  - name: _id
+    field_type: objectId
+  - name: level
+    field_type: string
+    description: Log level (error, warning, critical)
+  - name: message
+    field_type: string
+    description: Error message
+  - name: service
+    field_type: string
+    description: Service name that generated the error
+  - name: stack_trace
+    field_type: string
+    description: Stack trace if available
+  - name: timestamp
+    field_type: date
+    description: When the error occurred
+  - name: resolved
+    field_type: boolean
+    description: Whether the error has been resolved

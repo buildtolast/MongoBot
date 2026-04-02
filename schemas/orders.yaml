@@ -1,0 +1,27 @@
+name: orders
+description: E-commerce order records
+fields:
+  - name: _id
+    field_type: objectId
+    description: Order ID
+  - name: user_id
+    field_type: objectId
+    description: Reference to user
+  - name: status
+    field_type: string
+    description: Order status (pending, processing, shipped, delivered, cancelled)
+  - name: total
+    field_type: number
+    description: Order total in USD
+  - name: items_count
+    field_type: number
+    description: Number of items in order
+  - name: created_at
+    field_type: date
+    description: Order placement date
+  - name: shipped_at
+    field_type: date
+    description: Shipment date (null if not shipped)
+  - name: payment_method
+    field_type: string
+    description: Payment method (credit_card, paypal, bank_transfer)

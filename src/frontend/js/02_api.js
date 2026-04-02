@@ -1,0 +1,85 @@
+/* =============================================
+   API Client
+   ============================================= */
+
+var API_BASE = '';
+
+async function queryApi(queryText, model) {
+    var body = { query: queryText };
+    if (model && model !== 'default') {
+        body.model = model;
+    }
+    try {
+        var resp = await fetch(API_BASE + '/api/query', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+        if (!resp.ok) {
+            var errBody = await resp.text();
+            var errMsg;
+            try {
+                errMsg = JSON.parse(errBody).error || errBody;
+            } catch (_) {
+                errMsg = errBody || ('HTTP ' + resp.status);
+            }
+            throw new Error(errMsg);
+        }
+        return await resp.json();
+    } catch (err) {
+        showError(err.message || 'Query failed');
+        throw err;
+    }
+}
+
+async function fetchSchemas() {
+    try {
+        var resp = await fetch(API_BASE + '/api/schemas');
+        if (!resp.ok) {
+            throw new Error('Failed to fetch schemas: HTTP ' + resp.status);
+        }
+        return await resp.json();
+    } catch (err) {
+        console.warn('Schema fetch failed:', err);
+        return [];
+    }
+}
+
+async function fetchModels() {
+    try {
+        var resp = await fetch(API_BASE + '/api/models');
+        if (!resp.ok) return [];
+        return await resp.json();
+    } catch (err) {
+        console.warn('Models fetch failed:', err);
+        return [];
+    }
+}
+
+function exportData(format) {
+    if (!AppState.currentQuery) return;
+    var params = new URLSearchParams({
+        query: AppState.currentQuery,
+        format: format
+    });
+    window.open(API_BASE + '/api/export?' + params.toString(), '_blank');
+}
+
+async function checkHealth() {
+    try {
+        var resp = await fetch(API_BASE + '/api/health');
+        if (!resp.ok) throw new Error('Health check failed');
+        var data = await resp.json();
+        updateStatusBadge('mongo-status', data.mongodb === true || data.mongodb === 'connected');
+        updateStatusBadge('ollama-status', data.ollama === true || data.ollama === 'connected');
+        AppState.mongoConnected = data.mongodb === true || data.mongodb === 'connected';
+        AppState.ollamaConnected = data.ollama === true || data.ollama === 'connected';
+        return data;
+    } catch (err) {
+        updateStatusBadge('mongo-status', false);
+        updateStatusBadge('ollama-status', false);
+        AppState.mongoConnected = false;
+        AppState.ollamaConnected = false;
+        return null;
+    }
+}

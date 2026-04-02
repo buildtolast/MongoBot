@@ -1,0 +1,78 @@
+</style>
+<body>
+<div id="app">
+  <aside id="sidebar">
+    <div class="sidebar-header">
+      <h1 class="logo">Mongo<span class="logo-accent">BOT</span></h1>
+      <span class="version" id="version-badge"></span>
+    </div>
+    <div id="schema-browser">
+      <h3>Collections</h3>
+      <div id="schema-list"></div>
+    </div>
+    <div id="query-history">
+      <h3>History</h3>
+      <div id="history-list"></div>
+    </div>
+  </aside>
+  <main id="main-content">
+    <header id="top-bar">
+      <button id="sidebar-toggle" class="icon-btn" title="Toggle sidebar">&#9776;</button>
+      <div class="status-indicators">
+        <span id="ollama-status" class="status-badge" title="Ollama LLM">LLM</span>
+        <span id="mongo-status" class="status-badge" title="MongoDB">DB</span>
+        <span id="ws-status" class="status-badge" title="WebSocket">WS</span>
+      </div>
+    </header>
+    <section id="query-section">
+      <form id="query-form">
+        <div class="query-input-row">
+          <input type="text" id="query-input" placeholder="Ask in natural language... e.g. 'find active users from last week'" autocomplete="off" autofocus />
+          <button type="submit" id="query-submit" title="Execute query">
+            <span class="btn-text">Query</span>
+            <span class="btn-spinner" hidden></span>
+          </button>
+        </div>
+        <div class="query-options">
+          <label>Model: <select id="model-select"><option>default</option></select></label>
+        </div>
+      </form>
+    </section>
+    <section id="results-section" hidden>
+      <div id="results-header">
+        <div class="results-stats">
+          <span id="result-count"></span>
+          <span id="result-time"></span>
+          <span id="result-collection"></span>
+        </div>
+        <div class="export-buttons">
+          <button id="export-csv" class="export-btn" title="Download CSV">CSV</button>
+          <button id="export-json" class="export-btn" title="Download JSON">JSON</button>
+        </div>
+      </div>
+      <div id="query-inspector" class="collapsible">
+        <button class="collapsible-toggle">Parsed Query &#9656;</button>
+        <pre id="parsed-query-json" class="code-block" hidden></pre>
+      </div>
+      <div id="results-table-container">
+        <table id="results-table">
+          <thead id="results-thead"></thead>
+          <tbody id="results-tbody"></tbody>
+        </table>
+      </div>
+      <div id="pagination"></div>
+    </section>
+    <section id="empty-state">
+      <div class="empty-icon">&#128269;</div>
+      <h2>Query your MongoDB</h2>
+      <p>Type a natural language query above to search your collections</p>
+      <div class="example-queries">
+        <button class="example-query">find all active users</button>
+        <button class="example-query">count orders from last month</button>
+        <button class="example-query">show recent error logs</button>
+      </div>
+    </section>
+    <div id="error-toast" class="toast" hidden></div>
+  </main>
+</div>
+<script>

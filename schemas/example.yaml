@@ -1,0 +1,27 @@
+name: users
+description: Application user accounts
+fields:
+  - name: _id
+    field_type: objectId
+    description: Unique identifier
+  - name: email
+    field_type: string
+    description: User email address
+  - name: name
+    field_type: string
+    description: Full name
+  - name: status
+    field_type: string
+    description: Account status (active, suspended, deleted)
+  - name: role
+    field_type: string
+    description: User role (admin, user, moderator)
+  - name: created_at
+    field_type: date
+    description: Account creation timestamp
+  - name: last_login
+    field_type: date
+    description: Most recent login
+  - name: login_count
+    field_type: number
+    description: Total number of logins

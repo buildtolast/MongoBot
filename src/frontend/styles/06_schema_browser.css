@@ -1,0 +1,166 @@
+/* =============================================
+   Schema Browser Sidebar
+   ============================================= */
+
+.collection-card {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin-bottom: 8px;
+    overflow: hidden;
+    transition: border-color var(--transition);
+}
+
+.collection-card:hover {
+    border-color: var(--border-light);
+}
+
+.collection-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    cursor: pointer;
+    transition: background var(--transition);
+    user-select: none;
+}
+
+.collection-card-header:hover {
+    background: rgba(255, 255, 255, 0.03);
+}
+
+.collection-name {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.collection-name::before {
+    content: '';
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--success);
+    flex-shrink: 0;
+}
+
+.collection-count {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+}
+
+.collection-expand {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    transition: transform var(--transition);
+}
+
+.collection-card.expanded .collection-expand {
+    transform: rotate(90deg);
+}
+
+.collection-fields {
+    padding: 0 12px 10px;
+    display: none;
+}
+
+.collection-card.expanded .collection-fields {
+    display: block;
+}
+
+.field-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 3px 0;
+    font-size: 0.78rem;
+}
+
+.field-name {
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+}
+
+.field-type {
+    font-size: 0.65rem;
+    font-weight: 600;
+    padding: 1px 6px;
+    border-radius: 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+}
+
+.field-type-string {
+    background: rgba(88, 166, 255, 0.15);
+    color: var(--accent);
+}
+
+.field-type-number,
+.field-type-int,
+.field-type-double,
+.field-type-long {
+    background: var(--success-bg);
+    color: var(--success);
+}
+
+.field-type-date {
+    background: var(--warning-bg);
+    color: var(--warning);
+}
+
+.field-type-bool,
+.field-type-boolean {
+    background: rgba(188, 140, 255, 0.15);
+    color: #bc8cff;
+}
+
+.field-type-objectid,
+.field-type-object {
+    background: rgba(139, 148, 158, 0.15);
+    color: var(--text-muted);
+}
+
+.field-type-array {
+    background: rgba(255, 123, 114, 0.15);
+    color: #ff7b72;
+}
+
+/* --- Query History --- */
+
+.history-item {
+    padding: 6px 10px;
+    border-radius: var(--radius);
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    cursor: pointer;
+    margin-bottom: 2px;
+    transition: all var(--transition);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.history-item:hover {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+}
+
+.history-item-time {
+    font-size: 0.65rem;
+    color: var(--text-muted);
+    display: block;
+    margin-top: 1px;
+    font-family: var(--font-mono);
+}
+
+.history-empty {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    padding: 8px 0;
+    font-style: italic;
+}

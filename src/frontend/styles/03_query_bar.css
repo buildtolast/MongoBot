@@ -1,0 +1,109 @@
+/* =============================================
+   Query Bar
+   ============================================= */
+
+#query-form {
+    width: 100%;
+}
+
+.query-input-row {
+    display: flex;
+    gap: 8px;
+    align-items: stretch;
+}
+
+#query-input {
+    flex: 1;
+    padding: 10px 16px;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text-primary);
+    font-size: 0.95rem;
+    transition: border-color var(--transition), box-shadow var(--transition);
+    outline: none;
+}
+
+#query-input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-bg);
+}
+
+#query-input::placeholder {
+    color: var(--text-muted);
+}
+
+#query-submit {
+    padding: 10px 24px;
+    background: var(--accent);
+    color: #fff;
+    font-weight: 600;
+    border-radius: var(--radius);
+    transition: background var(--transition), transform var(--transition);
+    white-space: nowrap;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 90px;
+    justify-content: center;
+}
+
+#query-submit:hover {
+    background: var(--accent-hover);
+}
+
+#query-submit:active {
+    transform: scale(0.97);
+}
+
+#query-submit:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+    transform: none;
+}
+
+/* Spinner */
+.btn-spinner {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border: 2px solid rgba(255, 255, 255, 0.3);
+    border-top-color: #fff;
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+/* Query Options */
+.query-options {
+    margin-top: 8px;
+    display: flex;
+    gap: 16px;
+    align-items: center;
+}
+
+.query-options label {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.query-options select {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 4px 8px;
+    color: var(--text-primary);
+    font-size: 0.8rem;
+    outline: none;
+    cursor: pointer;
+}
+
+.query-options select:focus {
+    border-color: var(--accent);
+}
