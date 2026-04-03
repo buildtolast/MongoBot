@@ -155,12 +155,180 @@ Query: {query}"#
 }
 
 /// Parse raw LLM response text into a ParsedQuery struct.
+/// Handles common LLM output variations gracefully.
 pub(crate) fn parse_llm_response(raw: &str) -> Result<ParsedQuery, AppError> {
-    // Strip markdown code fences if present
     let cleaned = strip_markdown_fences(raw);
 
-    serde_json::from_str::<ParsedQuery>(&cleaned)
-        .map_err(|e| AppError::LlmParse(format!("Failed to parse LLM response as JSON: {e}")))
+    // Try direct parse first
+    if let Ok(parsed) = serde_json::from_str::<ParsedQuery>(&cleaned) {
+        return Ok(parsed);
+    }
+
+    // If direct parse fails, try to fix common LLM issues via loose Value parse
+    let value: serde_json::Value = serde_json::from_str(&cleaned)
+        .map_err(|e| AppError::LlmParse(format!("LLM returned invalid JSON: {e}")))?;
+
+    let obj = value.as_object()
+        .ok_or_else(|| AppError::LlmParse("LLM returned non-object JSON".into()))?;
+
+    // Build ParsedQuery manually from loose JSON
+    let collection = obj.get("collection")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    if collection.is_empty() {
+        return Err(AppError::LlmParse("LLM response missing 'collection' field".into()));
+    }
+
+    let operation = obj.get("operation")
+        .and_then(|v| v.as_str())
+        .unwrap_or("find");
+
+    let operation = match operation {
+        "count" => crate::domain::models::QueryOperation::Count,
+        "distinct" => crate::domain::models::QueryOperation::Distinct,
+        "aggregate" => crate::domain::models::QueryOperation::Aggregate,
+        "insert" => crate::domain::models::QueryOperation::Insert,
+        "update" => crate::domain::models::QueryOperation::Update,
+        "delete" => crate::domain::models::QueryOperation::Delete,
+        _ => crate::domain::models::QueryOperation::Find,
+    };
+
+    // Parse filters flexibly — accept various LLM formats
+    let filters = parse_filters_flexible(obj.get("filters"));
+
+    let projection: Vec<String> = obj.get("projection")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+
+    let sort = obj.get("sort").and_then(|v| {
+        let s = v.as_object()?;
+        let field = s.get("field").and_then(|f| f.as_str())?.to_string();
+        let order = s.get("order").and_then(|o| o.as_i64()).unwrap_or(1) as i32;
+        Some(crate::domain::models::SortSpec { field, order })
+    });
+
+    let limit = obj.get("limit")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(100) as usize;
+
+    let document = obj.get("document").cloned();
+    let update_fields = obj.get("update_fields").cloned();
+    let update_many = obj.get("update_many").and_then(|v| v.as_bool()).unwrap_or(false);
+    let delete_many = obj.get("delete_many").and_then(|v| v.as_bool()).unwrap_or(false);
+
+    Ok(crate::domain::models::ParsedQuery {
+        collection,
+        operation,
+        filters,
+        projection,
+        sort,
+        limit,
+        document,
+        update_fields,
+        update_many,
+        delete_many,
+    })
+}
+
+/// Parse filters from various LLM formats.
+/// Accepts: [{field, operator, value}], [{field: value}], {field: value}, etc.
+fn parse_filters_flexible(filters_val: Option<&serde_json::Value>) -> Vec<crate::domain::models::Filter> {
+    let Some(val) = filters_val else { return vec![] };
+
+    if let Some(arr) = val.as_array() {
+        arr.iter().filter_map(|item| {
+            let obj = item.as_object()?;
+
+            // Standard format: {field, operator, value}
+            if let (Some(field), Some(value)) = (obj.get("field").and_then(|v| v.as_str()), obj.get("value")) {
+                let op = obj.get("operator")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("eq");
+                let operator = match op {
+                    "ne" => crate::domain::models::FilterOperator::Ne,
+                    "gt" => crate::domain::models::FilterOperator::Gt,
+                    "gte" => crate::domain::models::FilterOperator::Gte,
+                    "lt" => crate::domain::models::FilterOperator::Lt,
+                    "lte" => crate::domain::models::FilterOperator::Lte,
+                    "in" => crate::domain::models::FilterOperator::In,
+                    "nin" => crate::domain::models::FilterOperator::Nin,
+                    "contains" => crate::domain::models::FilterOperator::Contains,
+                    "regex" => crate::domain::models::FilterOperator::Regex,
+                    _ => crate::domain::models::FilterOperator::Eq,
+                };
+                return Some(crate::domain::models::Filter {
+                    field: field.to_string(),
+                    operator,
+                    value: value.clone(),
+                });
+            }
+
+            // Alternative format: {"fieldname": "value"} or {"fieldname": {"$gt": 5}}
+            if obj.len() == 1 {
+                let (field, value) = obj.iter().next()?;
+                if field.starts_with('$') { return None; } // Skip mongo operators at top level
+
+                // Check if value is a mongo operator object like {"$gt": 5}
+                if let Some(inner_obj) = value.as_object() {
+                    if let Some((op_key, op_val)) = inner_obj.iter().next() {
+                        let operator = match op_key.as_str() {
+                            "$ne" => crate::domain::models::FilterOperator::Ne,
+                            "$gt" => crate::domain::models::FilterOperator::Gt,
+                            "$gte" => crate::domain::models::FilterOperator::Gte,
+                            "$lt" => crate::domain::models::FilterOperator::Lt,
+                            "$lte" => crate::domain::models::FilterOperator::Lte,
+                            "$in" => crate::domain::models::FilterOperator::In,
+                            "$regex" => crate::domain::models::FilterOperator::Regex,
+                            _ => crate::domain::models::FilterOperator::Eq,
+                        };
+                        return Some(crate::domain::models::Filter {
+                            field: field.clone(),
+                            operator,
+                            value: op_val.clone(),
+                        });
+                    }
+                }
+
+                return Some(crate::domain::models::Filter {
+                    field: field.clone(),
+                    operator: crate::domain::models::FilterOperator::Eq,
+                    value: value.clone(),
+                });
+            }
+
+            None
+        }).collect()
+    } else if let Some(obj) = val.as_object() {
+        // Handle filter as a plain object: {"genre": "Sci-Fi", "rating": {"$gt": 8}}
+        obj.iter().filter_map(|(field, value)| {
+            if field.starts_with('$') { return None; }
+            if let Some(inner) = value.as_object() {
+                if let Some((op_key, op_val)) = inner.iter().next() {
+                    let operator = match op_key.as_str() {
+                        "$ne" => crate::domain::models::FilterOperator::Ne,
+                        "$gt" => crate::domain::models::FilterOperator::Gt,
+                        "$gte" => crate::domain::models::FilterOperator::Gte,
+                        "$lt" => crate::domain::models::FilterOperator::Lt,
+                        "$lte" => crate::domain::models::FilterOperator::Lte,
+                        _ => crate::domain::models::FilterOperator::Eq,
+                    };
+                    return Some(crate::domain::models::Filter {
+                        field: field.clone(), operator, value: op_val.clone(),
+                    });
+                }
+            }
+            Some(crate::domain::models::Filter {
+                field: field.clone(),
+                operator: crate::domain::models::FilterOperator::Eq,
+                value: value.clone(),
+            })
+        }).collect()
+    } else {
+        vec![]
+    }
 }
 
 /// Remove markdown code block markers from LLM output.
