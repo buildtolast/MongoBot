@@ -36,15 +36,17 @@ impl LlmClient {
     }
 
     /// Parse a natural language query into a structured MongoDB query.
+    /// Optionally override the model for this request.
     pub async fn parse_query(
         &self,
         user_query: &str,
         schema_context: &str,
+        model_override: Option<&str>,
     ) -> Result<ParsedQuery, AppError> {
         let prompt = build_prompt(user_query, schema_context);
 
         let raw = match self.provider {
-            LlmProvider::Ollama => self.call_ollama(&prompt).await?,
+            LlmProvider::Ollama => self.call_ollama(&prompt, model_override).await?,
             LlmProvider::Anthropic => self.call_anthropic(&prompt).await?,
             LlmProvider::OpenAI => self.call_openai(&prompt).await?,
         };
@@ -52,18 +54,38 @@ impl LlmClient {
         parse_llm_response(&raw)
     }
 
+    /// List available models from Ollama.
+    pub async fn list_models(&self) -> Result<Vec<String>, AppError> {
+        let url = format!("{}/api/tags", self.ollama_url.trim_end_matches('/'));
+        let response = self.http.get(&url)
+            .timeout(std::time::Duration::from_secs(5))
+            .send().await
+            .map_err(|e| AppError::Internal(format!("Failed to list models: {e}")))?;
+
+        #[derive(serde::Deserialize)]
+        struct TagsResponse { models: Vec<ModelInfo> }
+        #[derive(serde::Deserialize)]
+        struct ModelInfo { name: String }
+
+        let tags: TagsResponse = response.json().await
+            .map_err(|e| AppError::Internal(format!("Failed to parse models: {e}")))?;
+
+        Ok(tags.models.into_iter().map(|m| m.name).collect())
+    }
+
     /// Call Ollama for text generation via HTTP API directly.
-    async fn call_ollama(&self, prompt: &str) -> Result<String, AppError> {
+    async fn call_ollama(&self, prompt: &str, model_override: Option<&str>) -> Result<String, AppError> {
         let url = format!("{}/api/generate", self.ollama_url.trim_end_matches('/'));
+        let model = model_override.unwrap_or(&self.model);
 
         let body = serde_json::json!({
-            "model": self.model,
+            "model": model,
             "prompt": prompt,
             "stream": false,
             "format": "json"
         });
 
-        tracing::debug!(url = %url, model = %self.model, "Calling Ollama");
+        tracing::debug!(url = %url, model = %model, "Calling Ollama");
 
         let response = self
             .http

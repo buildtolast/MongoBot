@@ -32,6 +32,23 @@ pub async fn health_check(state: web::Data<AppState>) -> HttpResponse {
     }))
 }
 
+/// List available LLM models from Ollama.
+pub async fn list_models(state: web::Data<AppState>) -> HttpResponse {
+    match state.llm.list_models().await {
+        Ok(models) => {
+            let default_model = &state.config.ollama_model;
+            let model_list: Vec<serde_json::Value> = models.iter()
+                .map(|m| json!({
+                    "name": m,
+                    "default": m == default_model,
+                }))
+                .collect();
+            HttpResponse::Ok().json(model_list)
+        }
+        Err(_) => HttpResponse::Ok().json(serde_json::json!([])),
+    }
+}
+
 /// Version endpoint — returns build metadata.
 pub async fn version() -> HttpResponse {
     HttpResponse::Ok().json(json!({

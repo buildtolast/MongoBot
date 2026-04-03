@@ -17,9 +17,10 @@ pub async fn handle_query(
     let schema_context = state.schema_context();
 
     // 2. Parse natural language into a structured query via LLM
+    let model_override = body.model.as_deref();
     let parsed = state
         .llm
-        .parse_query(&body.query, &schema_context)
+        .parse_query(&body.query, &schema_context, model_override)
         .await?;
 
     tracing::info!(

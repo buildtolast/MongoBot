@@ -28,17 +28,21 @@
             }
         });
 
-        // Load available models
+        // Load available models from Ollama
         fetchModels().then(function(models) {
+            var select = document.getElementById('model-select');
+            select.innerHTML = '';
             if (models && models.length > 0) {
-                var select = document.getElementById('model-select');
-                select.innerHTML = '<option value="default">default</option>';
                 models.forEach(function(model) {
                     var opt = document.createElement('option');
-                    opt.value = model.name || model;
-                    opt.textContent = model.name || model;
+                    var name = model.name || model;
+                    opt.value = name;
+                    opt.textContent = name + (model.default ? ' (default)' : '');
+                    if (model.default) opt.selected = true;
                     select.appendChild(opt);
                 });
+            } else {
+                select.innerHTML = '<option value="default">default</option>';
             }
         });
 

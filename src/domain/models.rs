@@ -212,6 +212,10 @@ pub struct QueryRequest {
     /// Optional export format.
     #[serde(default)]
     pub format: Option<ExportFormat>,
+
+    /// Optional model override (e.g. "qwen2.5-coder:7b"). Uses default if omitted.
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 /// Query response returned to the client.
