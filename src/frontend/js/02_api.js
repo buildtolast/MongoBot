@@ -70,10 +70,10 @@ async function checkHealth() {
         var resp = await fetch(API_BASE + '/api/health');
         if (!resp.ok) throw new Error('Health check failed');
         var data = await resp.json();
-        updateStatusBadge('mongo-status', data.mongodb === true || data.mongodb === 'connected');
-        updateStatusBadge('ollama-status', data.ollama === true || data.ollama === 'connected');
-        AppState.mongoConnected = data.mongodb === true || data.mongodb === 'connected';
-        AppState.ollamaConnected = data.ollama === true || data.ollama === 'connected';
+        updateStatusBadge('mongo-status', data.mongo === true);
+        updateStatusBadge('ollama-status', data.ollama === true);
+        AppState.mongoConnected = data.mongo === true;
+        AppState.ollamaConnected = data.ollama === true;
         return data;
     } catch (err) {
         updateStatusBadge('mongo-status', false);

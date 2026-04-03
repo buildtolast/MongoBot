@@ -69,13 +69,14 @@
                 renderResults(response);
                 addToHistory(
                     queryText,
-                    response.collection,
-                    response.total_count || (response.documents ? response.documents.length : 0),
-                    response.duration_ms
+                    response.parsed ? response.parsed.collection : '',
+                    response.count || 0,
+                    response.execution_ms
                 );
                 renderHistory(AppState.queryHistory);
-            }).catch(function() {
+            }).catch(function(err) {
                 showLoading(false);
+                console.error('Query failed:', err);
             });
         });
 

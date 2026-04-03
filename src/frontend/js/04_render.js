@@ -3,17 +3,17 @@
    ============================================= */
 
 function renderResults(response) {
+    // API returns: { parsed: {...}, results: [...] or {count: N}, count: N, execution_ms: N }
     var section = document.getElementById('results-section');
     var emptyState = document.getElementById('empty-state');
 
-    if (!response || !response.documents || response.documents.length === 0) {
-        section.hidden = true;
-        emptyState.style.display = '';
-        emptyState.querySelector('h2').textContent = 'No results';
-        emptyState.querySelector('p').textContent = 'Your query returned no documents. Try a different search.';
-        return;
-    }
+    // Normalize: results can be an array of docs, or an object like {count: N}
+    var docs = Array.isArray(response.results) ? response.results : null;
+    var isCountResult = !docs && response.results && response.results.count !== undefined;
+    var collection = response.parsed ? response.parsed.collection : '';
+    var operation = response.parsed ? response.parsed.operation : '';
 
+    // Show results section
     emptyState.style.display = 'none';
     section.hidden = false;
 
@@ -22,28 +22,48 @@ function renderResults(response) {
     var timeEl = document.getElementById('result-time');
     var collEl = document.getElementById('result-collection');
 
-    countEl.textContent = response.total_count != null
-        ? response.total_count + ' docs'
-        : response.documents.length + ' docs';
-    timeEl.textContent = response.duration_ms != null
-        ? response.duration_ms + 'ms'
-        : '';
-    collEl.textContent = response.collection || '';
+    if (isCountResult) {
+        countEl.textContent = 'Count: ' + response.results.count;
+    } else if (docs) {
+        countEl.textContent = docs.length + ' docs';
+    } else {
+        countEl.textContent = response.count + ' results';
+    }
+    timeEl.textContent = response.execution_ms != null ? response.execution_ms + 'ms' : '';
+    collEl.textContent = collection;
 
     // Update query inspector
     var parsedEl = document.getElementById('parsed-query-json');
-    if (response.parsed_query) {
-        parsedEl.textContent = JSON.stringify(response.parsed_query, null, 2);
+    if (response.parsed) {
+        parsedEl.textContent = JSON.stringify(response.parsed, null, 2);
     } else {
         parsedEl.textContent = '(no parsed query available)';
     }
 
-    // Store and render
+    // Store response
     AppState.lastResults = response;
     AppState.currentPage = 1;
     AppState.sortColumn = null;
     AppState.sortDirection = 'asc';
-    renderTable(response.documents);
+
+    if (isCountResult) {
+        // For count queries, show a simple result card instead of a table
+        var tbody = document.getElementById('results-tbody');
+        var thead = document.getElementById('results-thead');
+        thead.innerHTML = '<tr><th>Operation</th><th>Collection</th><th>Result</th></tr>';
+        tbody.innerHTML = '<tr><td>' + operation + '</td><td>' + collection +
+            '</td><td style="font-weight:600;color:var(--accent)">' + response.results.count + '</td></tr>';
+        document.getElementById('pagination').innerHTML = '';
+    } else if (docs && docs.length > 0) {
+        renderTable(docs);
+    } else {
+        // Empty result set
+        var tbody2 = document.getElementById('results-tbody');
+        var thead2 = document.getElementById('results-thead');
+        thead2.innerHTML = '';
+        tbody2.innerHTML = '<tr><td style="padding:20px;color:var(--text-secondary)">No documents found matching your query</td></tr>';
+        document.getElementById('pagination').innerHTML = '';
+    }
 }
 
 function renderTable(documents) {
@@ -236,7 +256,7 @@ function renderSchemas(schemas) {
                 fname.textContent = field.name || field;
 
                 var ftype = document.createElement('span');
-                var typeName = (field.type || field.bson_type || 'unknown').toLowerCase();
+                var typeName = (field.field_type || field.type || field.bson_type || 'unknown').toLowerCase();
                 ftype.className = 'field-type field-type-' + typeName;
                 ftype.textContent = typeName;
 
