@@ -55,9 +55,18 @@
         var queryForm = document.getElementById('query-form');
         queryForm.addEventListener('submit', function(e) {
             e.preventDefault();
+
+            // If currently loading, abort instead
+            if (AppState.loading) {
+                abortCurrentQuery();
+                showLoading(false);
+                showError('Query aborted');
+                return;
+            }
+
             var input = document.getElementById('query-input');
             var queryText = input.value.trim();
-            if (!queryText || AppState.loading) return;
+            if (!queryText) return;
 
             var model = document.getElementById('model-select').value;
 
@@ -76,7 +85,9 @@
                 renderHistory(AppState.queryHistory);
             }).catch(function(err) {
                 showLoading(false);
-                console.error('Query failed:', err);
+                if (err.name !== 'AbortError') {
+                    console.error('Query failed:', err);
+                }
             });
         });
 

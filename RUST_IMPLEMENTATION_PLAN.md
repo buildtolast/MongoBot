@@ -1,5 +1,34 @@
 # Slack-Mongo Query Bot — Rust Implementation Plan
 
+## Current Status (as of 2026-04-03)
+
+**Implemented (Phases 1-8 complete):**
+- Full project scaffold with actix-web 4, build.rs frontend assembly, config, error handling
+- MongoDB client with connection pooling, find/count/distinct operations
+- Domain models, schema YAML loading, safety checker, query executor
+- LLM client with Ollama integration (switched from `ollama-rs` to **direct HTTP calls via reqwest**)
+- Web UI with NL query bar, results table, query inspector, schema browser
+- CSV and JSON export with file download
+- Slack slash command handler
+- 40 unit tests
+
+**Key deviations from original plan:**
+- **No `ollama-rs` crate** — replaced with direct HTTP POST to Ollama `/api/generate` endpoint via reqwest. Simpler dependency, more control over request/response handling
+- **No `slack-morphism` crate** — Slack integration uses manual HTTP + HMAC-SHA256 verification
+- **No `actix-governor`** — rate limiting not yet implemented
+- **No `regex`** — not needed in current implementation
+- **Added `actix-cors 0.7`** — required for proper CORS preflight (OPTIONS) handling
+- **Database switched** from `myapp` to `movies` with real sample data (15 movies, 10 actors, 15 reviews with indexes)
+- **Default model** changed from `llama3.2` to `qwen3-coder:30b` (better JSON schema compliance)
+- **Docker Compose** no longer includes Ollama service — runs on host machine, bot uses `host.docker.internal`
+
+**Not yet implemented (Phases 9-11):**
+- Slack events (app mentions), interactive modals
+- WebSocket progress updates during query execution
+- Integration tests
+
+---
+
 ## Overview
 
 A Slack bot **and web dashboard** that translates natural language queries into MongoDB queries using a **local LLM** (Ollama), executes them safely, and returns results or exports to CSV/JSON. Built on **actix-web** with an embedded single-file HTML frontend (same pattern as GitWorkflowDashboard). Users can query via Slack slash commands **or** through the browser-based UI with direct file downloads.
@@ -41,24 +70,20 @@ A Slack bot **and web dashboard** that translates natural language queries into 
 name = "slack-mongo-bot"
 version = "0.1.0"
 edition = "2021"
+description = "NL-to-MongoDB query bot with Web UI and Slack integration"
 
 [dependencies]
-# Web framework (same as GitWorkflowDashboard)
+# Web framework
 actix-web = "4"
 actix-ws = "0.3"
-actix-governor = "0.6"          # Rate limiting
-
-# Slack SDK (actively maintained, supports Events/Socket Mode)
-slack-morphism = { version = "2.19", features = ["hyper"] }
+actix-rt = "2"
+actix-cors = "0.7"              # CORS preflight handling
 
 # MongoDB (official driver)
-mongodb = { version = "3.5", features = ["tokio-runtime"] }
+mongodb = "3.2"
 
-# Local LLM via Ollama
-ollama-rs = { version = "0.3", features = ["stream"] }
-
-# HTTP client (for cloud LLM fallback + Slack file uploads)
-reqwest = { version = "0.13", features = ["json", "stream", "rustls-tls"] }
+# HTTP client (also used for direct Ollama API calls)
+reqwest = { version = "0.12", features = ["json", "stream", "rustls-tls"] }
 
 # Async runtime
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal", "fs"] }
@@ -79,18 +104,18 @@ tracing-actix-web = "0.7"
 
 # Config
 dotenvy = "0.15"
-clap = { version = "4", features = ["derive"] }  # CLI args
+clap = { version = "4", features = ["derive", "env"] }
 
 # Security
 hmac = "0.12"
 sha2 = "0.10"
 subtle = "2"                    # Constant-time auth comparison
+hex = "0.4"
 
 # Async utilities
 futures = "0.3"
 
 # Validation
-regex = "1.11"
 chrono = { version = "0.4", features = ["serde"] }
 
 # Concurrent cache
@@ -99,12 +124,18 @@ dashmap = "6.1"
 # CSV export
 csv = "1.3"
 
+# Byte streams for actix
+bytes = "1"
+tokio-stream = "0.1"
+
 [profile.release]
 opt-level = 3
 lto = "thin"
 codegen-units = 1
 strip = true
 ```
+
+> **Note:** The original plan included `ollama-rs` for Ollama integration and `slack-morphism` for the Slack SDK. In the actual implementation, both were replaced: Ollama uses direct HTTP calls via `reqwest` (POST to `/api/generate`), and Slack uses manual HTTP + HMAC-SHA256 verification. `actix-cors` was added for CORS preflight handling, which was not in the original plan.
 
 ---
 
@@ -252,9 +283,12 @@ pub enum LlmProvider {
 
 ### 2. LLM Client (`src/infra/llm.rs`)
 
-**Ollama is the default and primary** parser.
+**Ollama is the default and primary** parser. The actual implementation uses **direct HTTP calls** via reqwest (POST to `{ollama_url}/api/generate` with `format: "json"`) instead of the `ollama-rs` crate shown below.
+
+> **Implementation note:** The `ollama-rs` code below reflects the original plan. The actual code uses `reqwest::Client` to POST directly to the Ollama API, which is simpler and avoids the `ollama-rs` dependency.
 
 ```rust
+// ORIGINAL PLAN (not what was implemented):
 use ollama_rs::Ollama;
 use ollama_rs::generation::completion::request::GenerationRequest;
 use crate::config::{AppConfig, LlmProvider};
@@ -1116,13 +1150,18 @@ ollama pull llama3.2
 curl http://localhost:11434/api/tags
 ```
 
-The bot uses `ollama-rs` with `FormatType::Json` which constrains output to valid JSON.
+The bot uses direct HTTP calls to Ollama's `/api/generate` endpoint with `format: "json"` which constrains output to valid JSON.
 
-Recommended models:
+**Default model:** `qwen3-coder:30b` — reliable JSON schema compliance for MongoDB query generation.
+
+**Model comparison results:**
+- `qwen3-coder:30b` — reliable ParsedQuery JSON, correct sort format `{ "field": "name", "order": -1 }`, slower (~2-5s). **Recommended.**
+- `gemma3:4b` — faster (~0.5-1s) but uses flat map sort format `{ "name": -1 }` causing parse failures. Not recommended for production.
+
+Other models that may work:
 - `llama3.2` (3B) — fast, good for simple queries
 - `llama3.1:8b` — more accurate for complex filters/aggregations
 - `mistral` — strong at JSON generation
-- `qwen2.5-coder` — good at structured data tasks
 
 ---
 
@@ -1131,12 +1170,12 @@ Recommended models:
 ```bash
 # MongoDB (required)
 MONGO_URI=mongodb://localhost:27017
-MONGO_DB_NAME=myapp
+MONGO_DB_NAME=movies
 
 # LLM (default: Ollama)
 LLM_PROVIDER=ollama
 OLLAMA_URL=http://localhost:11434
-OLLAMA_MODEL=llama3.2
+OLLAMA_MODEL=qwen3-coder:30b
 
 # Slack (optional — web UI works without these)
 # SLACK_BOT_TOKEN=xoxb-your-token
@@ -1185,22 +1224,20 @@ EXPOSE 3000
 CMD ["./slack-mongo-bot"]
 ```
 
-Docker Compose with Ollama + MongoDB:
+Docker Compose with MongoDB (Ollama runs on host):
 ```yaml
 services:
   bot:
     build: .
     environment:
-      - MONGO_URI=mongodb://mongo:27017
-      - MONGO_DB_NAME=myapp
-      - OLLAMA_URL=http://ollama:11434
+      MONGO_URI: mongodb://mongo:27017
+      MONGO_DB_NAME: movies
+      # Ollama runs on the host machine, not in Docker.
+      # On macOS Docker, host.docker.internal resolves to the host.
+      OLLAMA_URL: http://host.docker.internal:11434
+      OLLAMA_MODEL: qwen3-coder:30b
     ports: ["3000:3000"]
-    depends_on: [mongo, ollama]
-
-  ollama:
-    image: ollama/ollama
-    volumes: ["ollama_data:/root/.ollama"]
-    ports: ["11434:11434"]
+    depends_on: [mongo]
 
   mongo:
     image: mongo:7
@@ -1208,6 +1245,7 @@ services:
     ports: ["27017:27017"]
 
 volumes:
-  ollama_data:
   mongo_data:
 ```
+
+> **Note:** The original plan included an Ollama Docker service. In practice, Ollama runs on the host machine for better GPU access and performance. The bot connects via `host.docker.internal`.

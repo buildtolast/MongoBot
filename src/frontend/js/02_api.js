@@ -5,6 +5,12 @@
 var API_BASE = '';
 
 async function queryApi(queryText, model) {
+    // Cancel any previous in-flight request
+    if (currentAbortController) {
+        currentAbortController.abort();
+    }
+    currentAbortController = new AbortController();
+
     var body = { query: queryText };
     if (model && model !== 'default') {
         body.model = model;
@@ -13,8 +19,10 @@ async function queryApi(queryText, model) {
         var resp = await fetch(API_BASE + '/api/query', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body)
+            body: JSON.stringify(body),
+            signal: currentAbortController.signal
         });
+        currentAbortController = null;
         if (!resp.ok) {
             var errBody = await resp.text();
             var errMsg;
@@ -27,8 +35,19 @@ async function queryApi(queryText, model) {
         }
         return await resp.json();
     } catch (err) {
+        currentAbortController = null;
+        if (err.name === 'AbortError') {
+            throw err; // Don't show toast for user-initiated abort
+        }
         showError(err.message || 'Query failed');
         throw err;
+    }
+}
+
+function abortCurrentQuery() {
+    if (currentAbortController) {
+        currentAbortController.abort();
+        currentAbortController = null;
     }
 }
 

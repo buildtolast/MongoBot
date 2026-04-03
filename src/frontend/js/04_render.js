@@ -403,9 +403,19 @@ function showLoading(isLoading) {
     var btnText = submitBtn.querySelector('.btn-text');
     var btnSpinner = submitBtn.querySelector('.btn-spinner');
 
-    submitBtn.disabled = isLoading;
-    btnText.hidden = isLoading;
-    btnSpinner.hidden = !isLoading;
+    if (isLoading) {
+        btnText.textContent = 'Abort';
+        btnText.hidden = false;
+        btnSpinner.hidden = false;
+        submitBtn.disabled = false;
+        submitBtn.classList.add('abort-mode');
+    } else {
+        btnText.textContent = 'Query';
+        btnText.hidden = false;
+        btnSpinner.hidden = true;
+        submitBtn.disabled = false;
+        submitBtn.classList.remove('abort-mode');
+    }
 }
 
 function updateStatusBadge(id, connected) {

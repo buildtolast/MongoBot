@@ -9,7 +9,7 @@ services:
       # Ollama runs on the host machine, not in Docker.
       # On macOS Docker, host.docker.internal resolves to the host.
       OLLAMA_URL: http://host.docker.internal:11434
-      OLLAMA_MODEL: qwen3-coder:30b
+      OLLAMA_MODEL: qwen3:8b
       LLM_PROVIDER: ollama
       HOST: 0.0.0.0
       PORT: "3000"

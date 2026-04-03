@@ -2,6 +2,8 @@
    Application State
    ============================================= */
 
+var currentAbortController = null;
+
 var AppState = {
     currentQuery: '',
     lastResults: null,
