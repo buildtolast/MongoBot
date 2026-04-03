@@ -84,6 +84,18 @@ async function fetchSchemas() {
     }
 }
 
+async function refreshSchemas() {
+    try {
+        var resp = await fetch(API_BASE + '/api/schemas/refresh', { method: 'POST' });
+        if (!resp.ok) throw new Error('Refresh failed: HTTP ' + resp.status);
+        var data = await resp.json();
+        return data.schemas || [];
+    } catch (err) {
+        showError('Schema refresh failed: ' + err.message);
+        return [];
+    }
+}
+
 async function fetchModels() {
     try {
         var resp = await fetch(API_BASE + '/api/models');

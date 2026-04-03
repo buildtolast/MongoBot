@@ -86,6 +86,7 @@ async fn main() -> anyhow::Result<()> {
                     .route("/execute", web::post().to(handlers::query::handle_execute))
                     .route("/export", web::get().to(handlers::export::handle_export))
                     .route("/schemas", web::get().to(handlers::schemas::list_schemas))
+                    .route("/schemas/refresh", web::post().to(handlers::schemas::refresh_schemas))
             )
 
             // === WebSocket ===

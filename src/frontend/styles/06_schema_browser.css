@@ -2,6 +2,25 @@
    Schema Browser Sidebar
    ============================================= */
 
+.section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+.section-header h3 { margin: 0; }
+.section-header .icon-btn {
+    font-size: 1.1rem;
+    padding: 2px 6px;
+    border-radius: var(--radius);
+    transition: transform 0.3s ease;
+}
+.section-header .icon-btn.spinning {
+    animation: spin-refresh 0.8s linear infinite;
+}
+@keyframes spin-refresh {
+    to { transform: rotate(360deg); }
+}
+
 .collection-card {
     background: var(--bg-tertiary);
     border: 1px solid var(--border);

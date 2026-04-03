@@ -28,6 +28,25 @@
             }
         });
 
+        // Refresh schemas button
+        document.getElementById('refresh-schemas').addEventListener('click', function() {
+            var btn = this;
+            btn.classList.add('spinning');
+            btn.disabled = true;
+            refreshSchemas().then(function(schemas) {
+                if (schemas && schemas.length > 0) {
+                    AppState.schemas = schemas;
+                    renderSchemas(schemas);
+                    showError('Schemas refreshed: ' + schemas.length + ' collections');
+                }
+                btn.classList.remove('spinning');
+                btn.disabled = false;
+            }).catch(function() {
+                btn.classList.remove('spinning');
+                btn.disabled = false;
+            });
+        });
+
         // Load available models from Ollama
         fetchModels().then(function(models) {
             var select = document.getElementById('model-select');

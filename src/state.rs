@@ -83,6 +83,18 @@ impl AppState {
     pub fn get_schema(&self, name: &str) -> Option<CollectionSchema> {
         self.schemas.get(name).map(|entry| entry.value().clone())
     }
+
+    /// Re-introspect MongoDB and reload schemas. Called at runtime when
+    /// new collections are added or schema changes are detected.
+    pub async fn refresh_schemas(&self) -> usize {
+        let before = self.schemas.len();
+        discover_schemas_from_db(&self.mongo, &self.schemas).await;
+        merge_yaml_schemas(&self.schemas).await;
+        let after = self.schemas.len();
+        let new_count = if after > before { after - before } else { 0 };
+        tracing::info!(total = after, new = new_count, "Schemas refreshed");
+        after
+    }
 }
 
 /// Discover schemas by introspecting all collections in the MongoDB database.
