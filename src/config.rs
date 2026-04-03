@@ -95,7 +95,6 @@ fn default_allowed_ops() -> Vec<String> {
         "aggregate".to_string(),
         "insert".to_string(),
         "update".to_string(),
-        "delete".to_string(),
     ]
 }
 

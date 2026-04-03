@@ -165,8 +165,13 @@
 
     function showConfirmModal(response) {
         AppState.pendingWrite = response.parsed;
+        AppState.pendingBackupData = response.results;
+        AppState.backupDownloaded = false;
+
         var modal = document.getElementById('confirm-modal');
         var op = response.parsed.operation || 'write';
+        var hasAffectedDocs = Array.isArray(response.results) && response.results.length > 0;
+        var needsBackup = (op === 'update' || op === 'delete') && hasAffectedDocs;
 
         document.getElementById('confirm-title').textContent =
             'Confirm ' + op.charAt(0).toUpperCase() + op.slice(1) + ' Operation';
@@ -175,6 +180,9 @@
         if (response.parsed.filters && response.parsed.filters.length > 0) {
             detailHtml += '<strong>Filter:</strong> ' + response.parsed.filters.length + ' conditions<br>';
         }
+        if (response.affected_count != null) {
+            detailHtml += '<strong>Affected documents:</strong> ' + response.affected_count + '<br>';
+        }
         if (response.parsed.update_fields) {
             detailHtml += '<strong>Update:</strong> ' + JSON.stringify(response.parsed.update_fields) + '<br>';
         }
@@ -182,28 +190,117 @@
             detailHtml += '<strong>Document:</strong> ' + JSON.stringify(response.parsed.document).substring(0, 200) + '<br>';
         }
         if (response.parsed.update_many) detailHtml += '<strong>Scope:</strong> ALL matching documents<br>';
-        if (response.parsed.delete_many) detailHtml += '<strong>Scope:</strong> ALL matching documents<br>';
 
         document.getElementById('confirm-operation').innerHTML = detailHtml;
         document.getElementById('confirm-query').textContent = response.mongo_query || '';
 
-        // Danger styling for deletes
+        // Backup section
+        var previewEl = document.getElementById('confirm-preview');
         var execBtn = document.getElementById('confirm-execute');
-        if (op === 'delete') {
-            execBtn.textContent = 'Delete';
+
+        if (needsBackup) {
+            previewEl.innerHTML =
+                '<div class="backup-section">' +
+                '<div class="backup-label">Download a backup of affected data before proceeding:</div>' +
+                '<div class="backup-buttons">' +
+                '<button id="backup-csv" class="modal-btn backup-btn">Download CSV Backup</button>' +
+                '<button id="backup-json" class="modal-btn backup-btn">Download JSON Backup</button>' +
+                '</div>' +
+                '<div id="backup-status" class="backup-status"></div>' +
+                '</div>';
+
+            // Disable execute until backup downloaded
+            execBtn.disabled = true;
+            execBtn.title = 'Download a backup first';
+            execBtn.classList.add('btn-disabled');
+
+            // Backup button handlers
+            document.getElementById('backup-csv').addEventListener('click', function() {
+                downloadBackup('csv', response);
+            });
+            document.getElementById('backup-json').addEventListener('click', function() {
+                downloadBackup('json', response);
+            });
+
             document.getElementById('confirm-warning').textContent =
-                'WARNING: This will permanently delete data. This cannot be undone.';
-        } else if (op === 'update') {
-            execBtn.textContent = 'Update';
-            document.getElementById('confirm-warning').textContent =
-                'This will modify existing data. Please review the changes carefully.';
-        } else {
-            execBtn.textContent = 'Insert';
+                'This will modify ' + response.affected_count + ' document(s). You must download a backup before executing.';
+        } else if (op === 'insert') {
+            previewEl.innerHTML = '';
+            execBtn.disabled = false;
+            execBtn.classList.remove('btn-disabled');
             document.getElementById('confirm-warning').textContent =
                 'This will insert new data into your database.';
+        } else {
+            previewEl.innerHTML = '';
+            execBtn.disabled = false;
+            execBtn.classList.remove('btn-disabled');
         }
 
+        execBtn.textContent = op.charAt(0).toUpperCase() + op.slice(1);
         modal.hidden = false;
+    }
+
+    function downloadBackup(format, response) {
+        var data = AppState.pendingBackupData;
+        if (!Array.isArray(data) || data.length === 0) {
+            showError('No data to backup');
+            return;
+        }
+
+        var content, mimeType, ext;
+        if (format === 'csv') {
+            // Build CSV from JSON docs
+            var allKeys = {};
+            data.forEach(function(doc) {
+                Object.keys(flattenDocument(doc)).forEach(function(k) { allKeys[k] = true; });
+            });
+            var headers = Object.keys(allKeys);
+            var rows = [headers.join(',')];
+            data.forEach(function(doc) {
+                var flat = flattenDocument(doc);
+                var row = headers.map(function(h) {
+                    var v = flat[h];
+                    if (v == null) return '';
+                    var s = String(v);
+                    if (s.indexOf(',') >= 0 || s.indexOf('"') >= 0 || s.indexOf('\n') >= 0) {
+                        return '"' + s.replace(/"/g, '""') + '"';
+                    }
+                    return s;
+                });
+                rows.push(row.join(','));
+            });
+            content = rows.join('\n');
+            mimeType = 'text/csv';
+            ext = 'csv';
+        } else {
+            content = JSON.stringify(data, null, 2);
+            mimeType = 'application/json';
+            ext = 'json';
+        }
+
+        var collection = response.parsed ? response.parsed.collection : 'backup';
+        var timestamp = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
+        var filename = collection + '_backup_' + timestamp + '.' + ext;
+
+        var blob = new Blob([content], { type: mimeType });
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        a.click();
+        URL.revokeObjectURL(url);
+
+        // Mark backup as downloaded, enable execute
+        AppState.backupDownloaded = true;
+        var statusEl = document.getElementById('backup-status');
+        if (statusEl) {
+            statusEl.textContent = 'Backup downloaded: ' + filename;
+            statusEl.classList.add('backup-done');
+        }
+        var execBtn = document.getElementById('confirm-execute');
+        execBtn.disabled = false;
+        execBtn.classList.remove('btn-disabled');
+        execBtn.title = '';
     }
 
     function hideConfirmModal() {

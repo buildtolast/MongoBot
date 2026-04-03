@@ -32,20 +32,46 @@ pub async fn handle_query(
     let schema = state.get_schema(&parsed.collection);
     state.safety.validate(&parsed, schema.as_ref())?;
 
-    // 4. For write operations, return a confirmation request instead of executing
+    // 4. For write operations, return a confirmation request instead of executing.
+    //    For update/delete: preview affected documents so user can backup first.
     if parsed.operation.is_write() {
         let mongo_query = executor::build_mongo_shell_command(&parsed);
+
+        // For update/delete: query affected docs as preview for backup
+        let (preview_results, preview_count) = if parsed.operation == crate::domain::models::QueryOperation::Update
+            || parsed.operation == crate::domain::models::QueryOperation::Delete
+        {
+            let filter = executor::build_filter(&parsed.filters)?;
+            match state.mongo.find_documents(
+                &parsed.collection, Some(filter), None, Some(100), None,
+            ).await {
+                Ok(docs) => {
+                    let count = docs.len();
+                    let json_docs: Vec<serde_json::Value> = docs.iter()
+                        .filter_map(|d| {
+                            let bson = mongodb::bson::Bson::Document(d.clone());
+                            serde_json::to_value(&bson).ok()
+                        })
+                        .collect();
+                    (serde_json::json!(json_docs), count)
+                }
+                Err(_) => (serde_json::json!([]), 0),
+            }
+        } else {
+            (serde_json::json!(null), 0)
+        };
+
         let execution_ms = start.elapsed().as_millis() as u64;
 
         let response = QueryResponse {
             parsed,
-            results: serde_json::json!(null),
-            count: 0,
+            results: preview_results,
+            count: preview_count,
             execution_ms,
             mongo_query,
             index_analysis: None,
             requires_confirmation: true,
-            affected_count: None,
+            affected_count: Some(preview_count as u64),
         };
 
         return Ok(HttpResponse::Ok().json(response));

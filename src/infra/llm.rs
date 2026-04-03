@@ -121,7 +121,7 @@ pub(crate) fn build_prompt(query: &str, schema: &str) -> String {
 Respond with ONLY valid JSON matching this structure:
 {{
   "collection": "collection_name",
-  "operation": "find" | "count" | "aggregate" | "distinct" | "insert" | "update" | "delete",
+  "operation": "find" | "count" | "aggregate" | "distinct" | "insert" | "update",
   "filters": [
     {{
       "field": "field_name",
@@ -134,8 +134,7 @@ Respond with ONLY valid JSON matching this structure:
   "limit": 100,
   "document": {{ ... }},
   "update_fields": {{ ... }},
-  "update_many": false,
-  "delete_many": false
+  "update_many": false
 }}
 
 Rules:
@@ -146,8 +145,8 @@ Rules:
 - "in" and "nin" operators expect array values.
 - For insert: provide "document" with field values matching the schema.
 - For update: provide "filters" to match documents and "update_fields" with new values.
-- For delete: provide "filters" to match documents to delete. Never delete without filters.
-- "update_many" and "delete_many" default to false (single document operations).
+- Delete operations are not supported. If user asks to delete, respond with a find query instead.
+- "update_many" defaults to false (single document update).
 
 ## User Query
 
