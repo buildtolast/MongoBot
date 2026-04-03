@@ -9,6 +9,7 @@ description = "NL-to-MongoDB query bot with Web UI and Slack integration"
 actix-web = "4"
 actix-ws = "0.3"
 actix-rt = "2"
+actix-cors = "0.7"
 
 # MongoDB (official driver)
 mongodb = "3.2"

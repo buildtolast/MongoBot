@@ -1,3 +1,4 @@
+use actix_cors::Cors;
 use actix_web::{web, App, HttpServer, HttpResponse, middleware as actix_mw, http::header};
 use clap::Parser;
 use tracing_actix_web::TracingLogger;
@@ -35,6 +36,14 @@ async fn main() -> anyhow::Result<()> {
         App::new()
             // Structured request logging
             .wrap(TracingLogger::default())
+            // CORS — handles OPTIONS preflight automatically
+            .wrap(
+                Cors::default()
+                    .allow_any_origin()
+                    .allowed_methods(vec!["GET", "POST", "PUT", "DELETE", "OPTIONS"])
+                    .allowed_headers(vec![header::CONTENT_TYPE, header::AUTHORIZATION, header::ACCEPT])
+                    .max_age(3600)
+            )
             // Security headers
             .wrap(
                 actix_mw::DefaultHeaders::new()
@@ -45,10 +54,6 @@ async fn main() -> anyhow::Result<()> {
                         header::CONTENT_SECURITY_POLICY,
                         "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:",
                     ))
-                    // CORS — allow same-origin by default; customize via config if needed
-                    .add((header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"))
-                    .add((header::ACCESS_CONTROL_ALLOW_METHODS, "GET, POST, PUT, DELETE, OPTIONS"))
-                    .add((header::ACCESS_CONTROL_ALLOW_HEADERS, "Content-Type, Authorization"))
             )
             // Shared state
             .app_data(state.clone())
