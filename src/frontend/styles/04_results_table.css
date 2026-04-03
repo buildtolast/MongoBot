@@ -42,6 +42,17 @@
 
 /* --- Query Inspector --- */
 
+#query-inspectors {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+#query-inspectors .collapsible {
+    flex: 1;
+    min-width: 280px;
+}
+
 .collapsible {
     margin-bottom: 8px;
     flex-shrink: 0;
@@ -79,6 +90,18 @@
     overflow-y: auto;
     white-space: pre-wrap;
     word-break: break-word;
+}
+
+.code-block[hidden] { display: none; }
+
+.mongo-code {
+    color: var(--success);
+    border-color: rgba(63, 185, 80, 0.3);
+    background: rgba(63, 185, 80, 0.05);
+}
+
+.mongo-toggle {
+    color: var(--success) !important;
 }
 
 /* --- Table Container --- */

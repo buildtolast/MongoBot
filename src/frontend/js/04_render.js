@@ -32,7 +32,19 @@ function renderResults(response) {
     timeEl.textContent = response.execution_ms != null ? response.execution_ms + 'ms' : '';
     collEl.textContent = collection;
 
-    // Update query inspector
+    // Update mongo query panel
+    var mongoEl = document.getElementById('mongo-query-cmd');
+    if (response.mongo_query) {
+        mongoEl.textContent = response.mongo_query;
+        mongoEl.hidden = false;
+        var mongoToggle = document.querySelector('.mongo-toggle');
+        if (mongoToggle) {
+            mongoToggle.classList.add('open');
+            mongoToggle.innerHTML = 'MongoDB Query &#9662;';
+        }
+    }
+
+    // Update parsed query inspector
     var parsedEl = document.getElementById('parsed-query-json');
     if (response.parsed) {
         parsedEl.textContent = JSON.stringify(response.parsed, null, 2);

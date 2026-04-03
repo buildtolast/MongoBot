@@ -1,0 +1,35 @@
+name: movies
+description: Movie catalog with ratings, box office data, and release info
+fields:
+  - name: _id
+    field_type: objectId
+  - name: title
+    field_type: string
+    description: Movie title
+  - name: year
+    field_type: number
+    description: Release year
+  - name: genre
+    field_type: string
+    description: Primary genre (Drama, Crime, Action, Sci-Fi, Animation, Thriller, Romance, Comedy)
+  - name: director
+    field_type: string
+    description: Director name
+  - name: rating
+    field_type: number
+    description: IMDb rating (0-10 scale)
+  - name: runtime_min
+    field_type: number
+    description: Runtime in minutes
+  - name: language
+    field_type: string
+    description: Primary language (English, Japanese, Korean, French)
+  - name: country
+    field_type: string
+    description: Country of origin
+  - name: box_office_usd
+    field_type: number
+    description: Worldwide box office in USD
+  - name: released
+    field_type: date
+    description: Release date

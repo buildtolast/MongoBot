@@ -1,0 +1,26 @@
+name: actors
+description: Actor profiles with career details and filmography
+fields:
+  - name: _id
+    field_type: objectId
+  - name: name
+    field_type: string
+    description: Full name
+  - name: birth_year
+    field_type: number
+    description: Year of birth
+  - name: nationality
+    field_type: string
+    description: Nationality (American, British, Korean, Canadian, Australian, French)
+  - name: gender
+    field_type: string
+    description: Gender (Male, Female)
+  - name: active
+    field_type: boolean
+    description: Whether currently active in film
+  - name: oscar_wins
+    field_type: number
+    description: Number of Academy Award wins
+  - name: notable_movies
+    field_type: array
+    description: List of notable movie titles

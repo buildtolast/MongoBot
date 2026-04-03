@@ -1,13 +1,13 @@
 # SlackMongoBot — CLAUDE.md
 
 ## Project Overview
-NL-to-MongoDB query bot with Web UI and Slack integration. Actix-web backend with embedded vanilla JS/HTML frontend. Ollama (local LLM) for NL parsing. Single binary deployment.
+NL-to-MongoDB query bot with Web UI and Slack integration. Actix-web backend with embedded vanilla JS/HTML frontend. Ollama (local LLM) for NL parsing via direct HTTP calls (reqwest). Single binary deployment. Default database: `movies` (15 movies, 10 actors, 15 reviews with indexes).
 
 ## Build & Run
 ```bash
 cargo build                        # debug
 cargo build --release              # release
-cargo run -- --mongo-db-name myapp # run with required args
+cargo run -- --mongo-db-name movies # run with required args
 cargo test                         # tests
 ```
 
@@ -38,16 +38,16 @@ build.rs            — assembles frontend into $OUT_DIR/index.html
 - Shared state: `web::Data<AppState>` across actix workers
 - Frontend: `build.rs` assembles shell HTML + CSS + JS into `$OUT_DIR/index.html`, embedded via `include_str!()`
 - Error handling: `thiserror` + sanitized HTTP responses (internal errors logged, safe messages sent to client)
-- LLM: Ollama primary via `ollama-rs`, cloud fallback stubs
+- LLM: Ollama primary via direct HTTP calls (reqwest), cloud fallback stubs
 - Safety: field whitelist from schema YAML, operation whitelist, injection detection
 - Auth: optional Bearer token, constant-time comparison via `subtle::ConstantTimeEq`
 - Schema loading: YAML files in `schemas/` define collection fields and types for LLM context
 
 ## Dependencies (key)
 - `actix-web 4`, `actix-ws 0.3` — HTTP server + WebSocket
+- `actix-cors 0.7` — CORS preflight handling
 - `mongodb 3.2` — MongoDB driver (tokio runtime)
-- `ollama-rs 0.2` — Local LLM integration
-- `reqwest 0.12` with `rustls-tls` (no OpenSSL)
+- `reqwest 0.12` with `rustls-tls` — HTTP client (also used for direct Ollama API calls)
 - `clap 4` (derive) — CLI argument parsing
 - `tracing` + `tracing-actix-web` — structured logging
 - `hmac`, `sha2`, `subtle` — webhook verification + auth
@@ -73,5 +73,5 @@ Multi-stage build — `rust:1.88-bookworm` compile stage, `debian:bookworm-slim`
 
 ```bash
 docker build -t slack-mongo-bot .
-docker compose up              # bot + ollama + mongo
+docker compose up              # bot + mongo (Ollama runs on host)
 ```

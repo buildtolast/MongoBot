@@ -157,6 +157,9 @@ pub struct QueryResponse {
 
     /// Execution time in milliseconds.
     pub execution_ms: u64,
+
+    /// The equivalent MongoDB shell command.
+    pub mongo_query: String,
 }
 
 /// Export format options.

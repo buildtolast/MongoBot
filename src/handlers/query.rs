@@ -39,12 +39,14 @@ pub async fn handle_query(
     let count = query_result_len(&result);
     let results_json = query_result_to_json(&result);
     let execution_ms = start.elapsed().as_millis() as u64;
+    let mongo_query = executor::build_mongo_shell_command(&parsed);
 
     let response = QueryResponse {
         parsed,
         results: results_json,
         count,
         execution_ms,
+        mongo_query,
     };
 
     Ok(HttpResponse::Ok().json(response))

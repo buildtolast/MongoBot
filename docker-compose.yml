@@ -5,7 +5,7 @@ services:
       - "3000:3000"
     environment:
       MONGO_URI: mongodb://mongo:27017
-      MONGO_DB_NAME: myapp
+      MONGO_DB_NAME: movies
       # Ollama runs on the host machine, not in Docker.
       # On macOS Docker, host.docker.internal resolves to the host.
       OLLAMA_URL: http://host.docker.internal:11434

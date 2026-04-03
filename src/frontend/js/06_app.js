@@ -99,17 +99,18 @@
             }
         });
 
-        // Query inspector toggle
-        var inspectorToggle = document.querySelector('.collapsible-toggle');
-        if (inspectorToggle) {
-            inspectorToggle.addEventListener('click', function() {
-                var pre = document.getElementById('parsed-query-json');
+        // Query inspector toggles (mongo query + parsed JSON)
+        document.querySelectorAll('.collapsible-toggle').forEach(function(toggle) {
+            toggle.addEventListener('click', function() {
+                var pre = toggle.nextElementSibling;
+                if (!pre) return;
                 var isOpen = !pre.hidden;
                 pre.hidden = isOpen;
-                inspectorToggle.classList.toggle('open', !isOpen);
-                inspectorToggle.innerHTML = isOpen ? 'Parsed Query &#9656;' : 'Parsed Query &#9662;';
+                toggle.classList.toggle('open', !isOpen);
+                var label = toggle.textContent.replace(/[^a-zA-Z ]/g, '').trim();
+                toggle.innerHTML = label + (isOpen ? ' &#9656;' : ' &#9662;');
             });
-        }
+        });
 
         // Example query buttons
         var exampleBtns = document.querySelectorAll('.example-query');

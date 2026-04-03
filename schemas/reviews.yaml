@@ -1,0 +1,23 @@
+name: reviews
+description: Movie reviews with scores and helpfulness ratings
+fields:
+  - name: _id
+    field_type: objectId
+  - name: movie
+    field_type: string
+    description: Movie title being reviewed
+  - name: reviewer
+    field_type: string
+    description: Reviewer name
+  - name: score
+    field_type: number
+    description: Review score (1-5)
+  - name: text
+    field_type: string
+    description: Review text
+  - name: date
+    field_type: date
+    description: Review date
+  - name: helpful_votes
+    field_type: number
+    description: Number of helpful votes from readers

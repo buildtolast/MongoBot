@@ -50,9 +50,15 @@
           <button id="export-json" class="export-btn" title="Download JSON">JSON</button>
         </div>
       </div>
-      <div id="query-inspector" class="collapsible">
-        <button class="collapsible-toggle">Parsed Query &#9656;</button>
-        <pre id="parsed-query-json" class="code-block" hidden></pre>
+      <div id="query-inspectors">
+        <div id="mongo-query-panel" class="collapsible">
+          <button class="collapsible-toggle mongo-toggle">MongoDB Query &#9656;</button>
+          <pre id="mongo-query-cmd" class="code-block mongo-code" hidden></pre>
+        </div>
+        <div id="query-inspector" class="collapsible">
+          <button class="collapsible-toggle">Parsed JSON &#9656;</button>
+          <pre id="parsed-query-json" class="code-block" hidden></pre>
+        </div>
       </div>
       <div id="results-table-container">
         <table id="results-table">

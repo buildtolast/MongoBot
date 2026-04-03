@@ -79,6 +79,7 @@ App::new()
 **Middleware Stack:**
 - `TracingLogger` — Structured request logging
 - `Compress` — Gzip/Brotli response compression
+- `actix-cors` — CORS preflight handling (OPTIONS requests)
 - `Auth` — Bearer token validation (optional, for `/api/*` routes)
 - `SlackVerify` — HMAC-SHA256 signing secret (for `/api/slack/*` routes only)
 - Rate limiting via `actix-governor`
@@ -141,26 +142,38 @@ Both the Web UI and Slack handlers call into the **same** processing pipeline:
 
 Collection schemas are loaded from `schemas/*.yaml` files at startup and cached in a `DashMap` (lock-free concurrent hashmap). The schema provides field names, types, and descriptions that the LLM uses to generate accurate queries.
 
-Example schema (`schemas/users.yaml`):
+The default database is `movies`, containing 3 collections with sample data:
+- `movies` (15 documents) — title, year, genre, rating, director, etc.
+- `actors` (10 documents) — name, birth year, nationality, filmography
+- `reviews` (15 documents) — movie reference, reviewer, score, text
+
+All collections have indexes for efficient querying.
+
+Example schema (`schemas/movies.yaml`):
 ```yaml
-name: users
-description: Application user accounts
+name: movies
+description: Movie catalog with ratings and metadata
 fields:
   - name: _id
     field_type: objectId
-    description: Unique user identifier
-  - name: email
+    description: Unique movie identifier
+  - name: title
     field_type: string
-  - name: status
+  - name: year
+    field_type: integer
+    description: Release year
+  - name: genre
     field_type: string
-    description: Account status (active, suspended, deleted)
-  - name: created_at
-    field_type: date
+  - name: rating
+    field_type: double
+    description: Average rating (0-10)
 ```
 
 #### Step 2: NLP Parsing (Ollama LLM)
 
-The natural language query is sent to Ollama along with schema context. The LLM returns a structured `ParsedQuery` JSON object.
+The natural language query is sent to Ollama via **direct HTTP calls** (using reqwest) along with schema context. The LLM returns a structured `ParsedQuery` JSON object. The `format: "json"` parameter in the Ollama `/api/generate` request constrains output to valid JSON.
+
+**Note:** The project previously used the `ollama-rs` crate but switched to direct HTTP calls via reqwest for simpler dependency management and more control over request/response handling.
 
 **Why Ollama is the default:**
 | Factor | Ollama (Local) | Cloud (Anthropic/OpenAI) |
@@ -169,9 +182,18 @@ The natural language query is sent to Ollama along with schema context. The LLM 
 | Latency | ~200-500ms | ~500-2000ms |
 | Privacy | Data stays local | Data sent to third party |
 | Availability | No internet needed | Requires internet + API key |
-| JSON reliability | `FormatType::Json` enforced | Prompt-based (less reliable) |
+| JSON reliability | `format: "json"` enforced | Prompt-based (less reliable) |
 
-Recommended models: `llama3.2` (3B, fast), `llama3.1:8b` (accurate), `mistral` (good JSON), `qwen2.5-coder` (structured data).
+**Default model:** `qwen3-coder:30b` — reliable JSON schema compliance for MongoDB query generation.
+
+#### Model Comparison Results
+
+| Model | JSON Schema Compliance | Speed | Sort Format | Verdict |
+|-------|----------------------|-------|-------------|---------|
+| `qwen3-coder:30b` | High — consistently produces valid ParsedQuery JSON | Slower (~2-5s) | Uses `{ "field": "name", "order": -1 }` (matches schema) | **Recommended default** |
+| `gemma3:4b` | Lower — uses different sort format causing parse failures | Faster (~0.5-1s) | Uses `{ "name": -1 }` (flat map, not ParsedQuery-compatible) | Faster but unreliable |
+
+Use `qwen3-coder:30b` for production reliability. Use `gemma3:4b` only if speed is critical and you can tolerate occasional parse failures.
 
 **Example input/output:**
 ```
@@ -337,7 +359,7 @@ src/
 ├── infra/                 → External service clients
 │   ├── mongo.rs           → MongoPool: connect, find, count, distinct
 │   ├── slack.rs           → Slack API helpers (file upload, message post)
-│   └── llm.rs             → LlmClient: Ollama primary, cloud fallback
+│   └── llm.rs             → LlmClient: Ollama via direct HTTP (reqwest), cloud fallback
 │
 ├── domain/                → Business logic (no framework dependencies)
 │   ├── models.rs          → ParsedQuery, Filter, QueryRequest/Response, ExportFormat
@@ -407,28 +429,29 @@ Schemas are read on every query but written rarely (startup + hot reload). `Dash
 ### Local Development
 ```bash
 # Prerequisites
-ollama pull llama3.2                    # Local LLM
+ollama pull qwen3-coder:30b             # Local LLM (recommended model)
+ollama serve                            # Start Ollama on host
 mongod --dbpath /tmp/mongo              # MongoDB
 
 # Run
-cargo run -- --mongo-db-name myapp
+cargo run -- --mongo-db-name movies
 # Open http://localhost:3000
 ```
 
 ### Docker Compose
+
+Ollama runs on the **host machine**, not in Docker. The bot connects via `host.docker.internal`.
+
 ```yaml
 services:
   bot:
     build: .
     environment:
       MONGO_URI: mongodb://mongo:27017
-      MONGO_DB_NAME: myapp
-      OLLAMA_URL: http://ollama:11434
+      MONGO_DB_NAME: movies
+      OLLAMA_URL: http://host.docker.internal:11434
+      OLLAMA_MODEL: qwen3-coder:30b
     ports: ["3000:3000"]
-
-  ollama:
-    image: ollama/ollama
-    volumes: ["ollama_data:/root/.ollama"]
 
   mongo:
     image: mongo:7
@@ -438,6 +461,6 @@ services:
 ### Production
 - Single binary (~10MB with strip + LTO)
 - `debian:bookworm-slim` Docker image (~15MB total)
-- Ollama as sidecar or on GPU-enabled host
+- Ollama on host or GPU-enabled machine (not containerized for performance)
 - MongoDB via connection string (Atlas or self-hosted)
 - Optional: `DASHBOARD_TOKEN` for auth, `SLACK_BOT_TOKEN` for Slack integration

@@ -196,6 +196,72 @@ fn to_bson_array(value: &serde_json::Value) -> Result<Bson, AppError> {
     }
 }
 
+/// Build a MongoDB shell command string from a ParsedQuery (for display in the UI).
+pub fn build_mongo_shell_command(query: &ParsedQuery) -> String {
+    let filter = build_filter(&query.filters).unwrap_or_default();
+    let filter_str = format_bson_doc(&filter);
+
+    match query.operation {
+        QueryOperation::Find => {
+            let mut cmd = format!("db.{}.find({})", query.collection, filter_str);
+
+            if !query.projection.is_empty() {
+                let proj: Vec<String> = query.projection.iter()
+                    .map(|f| format!("{}: 1", f))
+                    .collect();
+                cmd = format!("db.{}.find({}, {{ {} }})", query.collection, filter_str, proj.join(", "));
+            }
+
+            if let Some(ref sort) = query.sort {
+                cmd.push_str(&format!(".sort({{ {}: {} }})", sort.field, sort.order));
+            }
+
+            cmd.push_str(&format!(".limit({})", query.limit));
+            cmd
+        }
+        QueryOperation::Count => {
+            format!("db.{}.countDocuments({})", query.collection, filter_str)
+        }
+        QueryOperation::Distinct => {
+            let field = query.projection.first()
+                .or_else(|| query.filters.first().map(|f| &f.field))
+                .map(|s| s.as_str())
+                .unwrap_or("_id");
+            format!("db.{}.distinct(\"{}\", {})", query.collection, field, filter_str)
+        }
+        QueryOperation::Aggregate => {
+            let mut stages = Vec::new();
+            if !query.filters.is_empty() {
+                stages.push(format!("{{ $match: {} }}", filter_str));
+            }
+            if let Some(ref sort) = query.sort {
+                stages.push(format!("{{ $sort: {{ {}: {} }} }}", sort.field, sort.order));
+            }
+            stages.push(format!("{{ $limit: {} }}", query.limit));
+            if !query.projection.is_empty() {
+                let proj: Vec<String> = query.projection.iter()
+                    .map(|f| format!("{}: 1", f))
+                    .collect();
+                stages.push(format!("{{ $project: {{ {} }} }}", proj.join(", ")));
+            }
+            format!("db.{}.aggregate([\n  {}\n])", query.collection, stages.join(",\n  "))
+        }
+    }
+}
+
+/// Format a BSON Document as a readable shell-style string.
+fn format_bson_doc(doc: &Document) -> String {
+    if doc.is_empty() {
+        return "{}".to_string();
+    }
+    // Use the BSON relaxed extended JSON format for readability
+    let json = serde_json::to_value(doc)
+        .map(|v| serde_json::to_string_pretty(&v).unwrap_or_else(|_| "{}".to_string()))
+        .unwrap_or_else(|_| "{}".to_string());
+    // Compact it to single line for shell display
+    json.replace('\n', " ").replace("  ", " ")
+}
+
 /// Escape regex special characters for a literal substring match.
 fn regex_escape(s: &str) -> String {
     let special = [
