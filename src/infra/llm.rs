@@ -113,6 +113,7 @@ impl LlmClient {
             .await
             .map_err(|e| AppError::LlmParse(format!("Failed to parse Ollama response: {e}")))?;
 
+
         tracing::debug!(response_len = parsed.response.len(), "Ollama response received");
         Ok(parsed.response)
     }
@@ -148,7 +149,7 @@ JSON format (REQUIRED fields: collection, operation, filters, limit):
   "update_fields": {{}}
 }}
 
-Rules: Use only fields from schema. Default limit 100. For insert: set "document". For update: set "filters" + "update_fields". Prefer indexed fields for filters/sort.
+Rules: Use only fields from schema. Default limit 100. For distinct: put the target field name in "projection" array. For insert: set "document". For update: set "filters" + "update_fields". Prefer indexed fields for filters/sort.
 
 Query: {query}"#
     )
@@ -198,10 +199,22 @@ pub(crate) fn parse_llm_response(raw: &str) -> Result<ParsedQuery, AppError> {
     // Parse filters flexibly — accept various LLM formats
     let filters = parse_filters_flexible(obj.get("filters"));
 
-    let projection: Vec<String> = obj.get("projection")
+    let mut projection: Vec<String> = obj.get("projection")
         .and_then(|v| v.as_array())
         .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
         .unwrap_or_default();
+
+    // For distinct with empty projection, try to find the field from other keys
+    if operation == crate::domain::models::QueryOperation::Distinct && projection.is_empty() {
+        // Check "field" key (some LLMs return {"field": "language"} for distinct)
+        if let Some(f) = obj.get("field").and_then(|v| v.as_str()) {
+            projection.push(f.to_string());
+        }
+        // Check "key" key
+        else if let Some(f) = obj.get("key").and_then(|v| v.as_str()) {
+            projection.push(f.to_string());
+        }
+    }
 
     let sort = obj.get("sort").and_then(|v| {
         let s = v.as_object()?;

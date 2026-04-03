@@ -26,6 +26,8 @@ pub async fn handle_query(
     tracing::info!(
         collection = %parsed.collection,
         operation = ?parsed.operation,
+        filters = parsed.filters.len(),
+        projection = ?parsed.projection,
         "Parsed query from NL"
     );
 

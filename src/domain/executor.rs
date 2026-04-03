@@ -63,11 +63,21 @@ pub async fn execute(pool: &MongoPool, query: &ParsedQuery) -> Result<QueryResul
         }
 
         QueryOperation::Distinct => {
-            // For distinct, use the first projection field or first filter field
+            // For distinct, try multiple sources for the target field:
+            // 1. First projection field (standard)
+            // 2. First filter field
+            // 3. "field" key in document (some LLMs return {"field": "language"})
+            let doc_field = query.document.as_ref()
+                .and_then(|d| d.as_object())
+                .and_then(|o| o.get("field"))
+                .and_then(|v| v.as_str())
+                .map(String::from);
+
             let field = query
                 .projection
                 .first()
                 .or_else(|| query.filters.first().map(|f| &f.field))
+                .or(doc_field.as_ref())
                 .ok_or_else(|| {
                     AppError::Validation(
                         "Distinct operation requires a field (via projection or filter)".into(),
