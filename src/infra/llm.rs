@@ -110,47 +110,25 @@ impl LlmClient {
 /// Build the system prompt for NL-to-MongoDB translation.
 pub(crate) fn build_prompt(query: &str, schema: &str) -> String {
     format!(
-        r#"You are a MongoDB query translator. Convert natural language queries into structured JSON.
+        r#"You are a MongoDB query translator. Return ONLY valid JSON. No explanation.
 
-## Available Collections and Schemas
-
+Collections:
 {schema}
-
-## Output Format
-
-Respond with ONLY valid JSON matching this structure:
+JSON format (REQUIRED fields: collection, operation, filters, limit):
 {{
-  "collection": "collection_name",
-  "operation": "find" | "count" | "aggregate" | "distinct" | "insert" | "update",
-  "filters": [
-    {{
-      "field": "field_name",
-      "operator": "eq" | "ne" | "gt" | "gte" | "lt" | "lte" | "in" | "nin" | "contains" | "regex",
-      "value": <value>
-    }}
-  ],
-  "projection": ["field1", "field2"],
-  "sort": {{ "field": "field_name", "order": 1 }},
+  "collection": "name",
+  "operation": "find|count|distinct|insert|update",
+  "filters": [{{"field":"name","operator":"eq|ne|gt|gte|lt|lte|in|contains","value":"x"}}],
+  "projection": [],
+  "sort": {{"field":"name","order":1}},
   "limit": 100,
-  "document": {{ ... }},
-  "update_fields": {{ ... }},
-  "update_many": false
+  "document": {{}},
+  "update_fields": {{}}
 }}
 
-Rules:
-- Use only collections and fields from the schema above.
-- Default limit to 100 if not specified.
-- For text search use "contains" or "regex" operators.
-- For date comparisons use ISO 8601 strings.
-- "in" and "nin" operators expect array values.
-- For insert: provide "document" with field values matching the schema.
-- For update: provide "filters" to match documents and "update_fields" with new values.
-- Delete operations are not supported. If user asks to delete, respond with a find query instead.
-- "update_many" defaults to false (single document update).
+Rules: Use only fields from schema. Default limit 100. For insert: set "document". For update: set "filters" + "update_fields". Prefer indexed fields for filters/sort.
 
-## User Query
-
-{query}"#
+Query: {query}"#
     )
 }
 

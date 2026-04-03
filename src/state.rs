@@ -49,44 +49,32 @@ impl AppState {
         })
     }
 
-    /// Format all schemas as text for LLM prompts, including index information.
+    /// Format all schemas as compact text for LLM prompts.
     pub fn schema_context(&self) -> String {
         let mut ctx = String::new();
 
         for entry in self.schemas.iter() {
             let schema = entry.value();
-            ctx.push_str(&format!("### Collection: {} ({})\n", schema.name, schema.source));
-            if !schema.description.is_empty() {
-                ctx.push_str(&format!("Description: {}\n", schema.description));
-            }
-            ctx.push_str("Fields:\n");
-            for field in &schema.fields {
-                ctx.push_str(&format!("  - {} ({})", field.name, field.field_type));
-                if let Some(ref desc) = field.description {
-                    ctx.push_str(&format!(" — {desc}"));
-                }
-                ctx.push('\n');
-            }
+            // Compact format: collection(field1:type, field2:type, ...)
+            let fields: Vec<String> = schema.fields.iter()
+                .map(|f| format!("{}({})", f.name, f.field_type))
+                .collect();
+            ctx.push_str(&format!("- {}: {}\n", schema.name, fields.join(", ")));
 
-            // Include index info so LLM can generate index-friendly queries
-            if !schema.indexes.is_empty() {
-                ctx.push_str("Indexes (prefer filtering/sorting on indexed fields):\n");
-                for idx in &schema.indexes {
-                    let keys: Vec<String> = idx.keys.iter()
-                        .map(|k| format!("{}:{}", k.field, k.direction))
-                        .collect();
-                    ctx.push_str(&format!("  - {} [{}]{}\n",
-                        idx.name,
-                        keys.join(", "),
-                        if idx.unique { " UNIQUE" } else { "" }
-                    ));
-                }
+            // Compact index list: only non-_id indexes, just field names
+            let indexed: Vec<String> = schema.indexes.iter()
+                .filter(|i| i.name != "_id_")
+                .map(|i| {
+                    i.keys.iter().map(|k| k.field.as_str()).collect::<Vec<_>>().join("+")
+                })
+                .collect();
+            if !indexed.is_empty() {
+                ctx.push_str(&format!("  indexes: {}\n", indexed.join(", ")));
             }
-            ctx.push('\n');
         }
 
         if ctx.is_empty() {
-            ctx.push_str("No schemas available.\n");
+            ctx.push_str("No collections available.\n");
         }
 
         ctx
