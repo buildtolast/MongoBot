@@ -14,7 +14,8 @@ const BASE_URL: &str = "http://localhost:3000";
 
 /// Helper: send a query to the API and return the parsed JSON response.
 async fn query(text: &str) -> Value {
-    query_with_model(text, "qwen3-coder:30b").await
+    let model = std::env::var("TEST_MODEL").unwrap_or_else(|_| "qwen3-coder:30b".to_string());
+    query_with_model(text, &model).await
 }
 
 /// Helper: send a query with a specific model.
