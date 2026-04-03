@@ -35,12 +35,40 @@ function renderResults(response) {
     // Update mongo query panel
     var mongoEl = document.getElementById('mongo-query-cmd');
     if (response.mongo_query) {
-        mongoEl.textContent = response.mongo_query;
+        var queryText = response.mongo_query;
+
+        // Append index analysis
+        if (response.index_analysis) {
+            var ia = response.index_analysis;
+            queryText += '\n\n/* Index Analysis */';
+            if (ia.index_used) {
+                queryText += '\n// Using index: ' + ia.matching_index;
+            } else {
+                queryText += '\n// WARNING: No matching index — collection scan required';
+            }
+            if (ia.unindexed_fields && ia.unindexed_fields.length > 0) {
+                queryText += '\n// Unindexed fields: ' + ia.unindexed_fields.join(', ');
+            }
+            if (ia.suggestions && ia.suggestions.length > 0) {
+                ia.suggestions.forEach(function(s) {
+                    queryText += '\n// Suggestion: ' + s;
+                });
+            }
+        }
+
+        mongoEl.textContent = queryText;
         mongoEl.hidden = false;
         var mongoToggle = document.querySelector('.mongo-toggle');
         if (mongoToggle) {
             mongoToggle.classList.add('open');
             mongoToggle.innerHTML = 'MongoDB Query &#9662;';
+        }
+
+        // Color the toggle based on index usage
+        if (response.index_analysis && !response.index_analysis.index_used) {
+            mongoToggle.classList.add('index-warning');
+        } else {
+            mongoToggle.classList.remove('index-warning');
         }
     }
 

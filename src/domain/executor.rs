@@ -1,5 +1,5 @@
 use mongodb::bson::{Bson, Document, doc};
-use crate::domain::models::{ParsedQuery, QueryOperation, Filter, FilterOperator};
+use crate::domain::models::{ParsedQuery, QueryOperation, Filter, FilterOperator, CollectionSchema, IndexAnalysis};
 use crate::error::AppError;
 use crate::infra::mongo::MongoPool;
 
@@ -260,6 +260,117 @@ fn format_bson_doc(doc: &Document) -> String {
         .unwrap_or_else(|_| "{}".to_string());
     // Compact it to single line for shell display
     json.replace('\n', " ").replace("  ", " ")
+}
+
+/// Analyze whether a query can use available indexes.
+pub fn analyze_index_usage(query: &ParsedQuery, schema: Option<&CollectionSchema>) -> IndexAnalysis {
+    let schema = match schema {
+        Some(s) => s,
+        None => return IndexAnalysis {
+            index_used: false,
+            matching_index: None,
+            unindexed_fields: query.filters.iter().map(|f| f.field.clone()).collect(),
+            suggestions: vec!["No schema available — cannot analyze index usage".to_string()],
+        },
+    };
+
+    if schema.indexes.is_empty() {
+        return IndexAnalysis {
+            index_used: false,
+            matching_index: None,
+            unindexed_fields: query.filters.iter().map(|f| f.field.clone()).collect(),
+            suggestions: vec!["No indexes found on this collection".to_string()],
+        };
+    }
+
+    // Collect all fields used in filters and sort
+    let filter_fields: Vec<&str> = query.filters.iter().map(|f| f.field.as_str()).collect();
+    let sort_field: Option<&str> = query.sort.as_ref().map(|s| s.field.as_str());
+
+    // Check each index to see if it covers query fields
+    let mut best_match: Option<(String, usize)> = None; // (name, matched_fields_count)
+
+    for idx in &schema.indexes {
+        if idx.name == "_id_" {
+            continue; // Skip default _id index
+        }
+
+        let idx_fields: Vec<&str> = idx.keys.iter().map(|k| k.field.as_str()).collect();
+
+        // An index is useful if its prefix matches query filter/sort fields
+        // MongoDB uses leftmost prefix matching
+        let first_idx_field = idx_fields.first().copied().unwrap_or("");
+
+        let mut matched = 0usize;
+
+        // Check if filter fields match index prefix
+        for ff in &filter_fields {
+            if idx_fields.contains(ff) {
+                matched += 1;
+            }
+        }
+
+        // Check if sort field is in the index
+        if let Some(sf) = sort_field {
+            if idx_fields.contains(&sf) {
+                matched += 1;
+            }
+        }
+
+        // Index is usable if at least the first key matches a filter field
+        if filter_fields.contains(&first_idx_field)
+            || sort_field == Some(first_idx_field)
+        {
+            if best_match.as_ref().map_or(true, |(_, best)| matched > *best) {
+                best_match = Some((idx.name.clone(), matched));
+            }
+        }
+    }
+
+    // Find fields NOT covered by any index
+    let all_indexed_fields: std::collections::HashSet<&str> = schema
+        .indexes
+        .iter()
+        .flat_map(|idx| idx.keys.iter().map(|k| k.field.as_str()))
+        .collect();
+
+    let unindexed_fields: Vec<String> = filter_fields
+        .iter()
+        .filter(|f| !all_indexed_fields.contains(**f))
+        .map(|f| f.to_string())
+        .collect();
+
+    let mut suggestions = Vec::new();
+
+    if best_match.is_none() && !filter_fields.is_empty() {
+        suggestions.push(format!(
+            "Consider creating an index on: {}",
+            filter_fields.join(", ")
+        ));
+    }
+
+    if !unindexed_fields.is_empty() {
+        suggestions.push(format!(
+            "Fields not indexed: {} — query may require a collection scan",
+            unindexed_fields.join(", ")
+        ));
+    }
+
+    if let Some(sf) = sort_field {
+        if !all_indexed_fields.contains(sf) && best_match.is_none() {
+            suggestions.push(format!(
+                "Sort field '{}' is not indexed — consider adding an index for faster sorting",
+                sf
+            ));
+        }
+    }
+
+    IndexAnalysis {
+        index_used: best_match.is_some(),
+        matching_index: best_match.map(|(name, _)| name),
+        unindexed_fields,
+        suggestions,
+    }
 }
 
 /// Escape regex special characters for a literal substring match.

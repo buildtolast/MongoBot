@@ -4,6 +4,7 @@ use mongodb::{
     options::{ClientOptions, FindOptions},
 };
 use std::time::Duration;
+use crate::domain::models::{CollectionSchema, FieldDef, IndexInfo, IndexKey};
 use crate::error::AppError;
 
 /// MongoDB connection pool wrapper.
@@ -103,6 +104,96 @@ impl MongoPool {
         Ok(count)
     }
 
+    /// List all collection names in the database.
+    pub async fn list_collections(&self) -> Result<Vec<String>, AppError> {
+        let names = self.db().list_collection_names().await?;
+        Ok(names)
+    }
+
+    /// Introspect a collection: sample documents to discover fields and types,
+    /// and list all indexes.
+    pub async fn introspect_collection(&self, name: &str) -> Result<CollectionSchema, AppError> {
+        let coll = self.collection(name);
+
+        // Sample up to 50 docs to discover fields and types
+        let sample_opts = FindOptions::builder()
+            .limit(Some(50))
+            .max_time(Duration::from_secs(10))
+            .build();
+        let mut cursor = coll.find(doc! {}).with_options(sample_opts).await?;
+
+        let mut field_types: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+        use futures::TryStreamExt;
+        while let Some(doc) = cursor.try_next().await? {
+            collect_field_types(&doc, "", &mut field_types);
+        }
+
+        let fields: Vec<FieldDef> = field_types
+            .into_iter()
+            .map(|(name, field_type)| FieldDef {
+                name,
+                field_type,
+                description: None,
+            })
+            .collect();
+
+        // Get indexes
+        let indexes = self.get_indexes(name).await?;
+
+        let doc_count = coll.estimated_document_count().await.unwrap_or(0);
+
+        Ok(CollectionSchema {
+            name: name.to_string(),
+            description: format!("{} documents", doc_count),
+            fields,
+            indexes,
+            source: "introspected".to_string(),
+        })
+    }
+
+    /// Get all indexes for a collection.
+    pub async fn get_indexes(&self, collection_name: &str) -> Result<Vec<IndexInfo>, AppError> {
+        let coll = self.collection(collection_name);
+        let mut cursor = coll.list_indexes().await?;
+
+        let mut indexes = Vec::new();
+        use futures::TryStreamExt;
+        while let Some(index_model) = cursor.try_next().await? {
+            let name = index_model
+                .options
+                .as_ref()
+                .and_then(|o| o.name.clone())
+                .unwrap_or_default();
+            let unique = index_model
+                .options
+                .as_ref()
+                .and_then(|o| o.unique)
+                .unwrap_or(false);
+
+            let mut keys = Vec::new();
+            for (field, bson) in &index_model.keys {
+                let direction = match bson {
+                    Bson::Int32(n) => *n,
+                    Bson::Int64(n) => *n as i32,
+                    Bson::Double(n) => *n as i32,
+                    _ => 1,
+                };
+                keys.push(IndexKey {
+                    field: field.clone(),
+                    direction,
+                });
+            }
+
+            indexes.push(IndexInfo {
+                name,
+                keys,
+                unique,
+            });
+        }
+
+        Ok(indexes)
+    }
+
     /// Get distinct values for a field.
     pub async fn distinct_values(
         &self,
@@ -115,5 +206,55 @@ impl MongoPool {
             .distinct(field, filter.unwrap_or_default())
             .await?;
         Ok(values)
+    }
+}
+
+/// Recursively collect field names and BSON type names from a document.
+fn collect_field_types(
+    doc: &Document,
+    prefix: &str,
+    types: &mut std::collections::BTreeMap<String, String>,
+) {
+    for (key, value) in doc {
+        let full_key = if prefix.is_empty() {
+            key.clone()
+        } else {
+            format!("{prefix}.{key}")
+        };
+
+        let type_name = bson_type_name(value);
+
+        if let Bson::Document(inner) = value {
+            if inner.contains_key("$oid")
+                || inner.contains_key("$date")
+                || inner.contains_key("$numberLong")
+            {
+                types.insert(full_key, type_name);
+            } else {
+                collect_field_types(inner, &full_key, types);
+            }
+        } else {
+            types.entry(full_key).or_insert(type_name);
+        }
+    }
+}
+
+/// Map a BSON value to a human-readable type name.
+fn bson_type_name(value: &Bson) -> String {
+    match value {
+        Bson::ObjectId(_) => "objectId".to_string(),
+        Bson::String(_) => "string".to_string(),
+        Bson::Int32(_) | Bson::Int64(_) => "number".to_string(),
+        Bson::Double(_) => "number".to_string(),
+        Bson::Boolean(_) => "boolean".to_string(),
+        Bson::DateTime(_) => "date".to_string(),
+        Bson::Array(_) => "array".to_string(),
+        Bson::Null => "null".to_string(),
+        Bson::Document(d) => {
+            if d.contains_key("$oid") { "objectId".to_string() }
+            else if d.contains_key("$date") { "date".to_string() }
+            else { "object".to_string() }
+        }
+        _ => "unknown".to_string(),
     }
 }

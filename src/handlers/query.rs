@@ -35,11 +35,12 @@ pub async fn handle_query(
     // 4. Execute the query against MongoDB
     let result = executor::execute(&state.mongo, &parsed).await?;
 
-    // 5. Build response
+    // 5. Build response with index analysis
     let count = query_result_len(&result);
     let results_json = query_result_to_json(&result);
     let execution_ms = start.elapsed().as_millis() as u64;
     let mongo_query = executor::build_mongo_shell_command(&parsed);
+    let index_analysis = Some(executor::analyze_index_usage(&parsed, schema.as_ref()));
 
     let response = QueryResponse {
         parsed,
@@ -47,6 +48,7 @@ pub async fn handle_query(
         count,
         execution_ms,
         mongo_query,
+        index_analysis,
     };
 
     Ok(HttpResponse::Ok().json(response))

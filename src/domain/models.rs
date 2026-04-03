@@ -103,7 +103,7 @@ fn default_sort_order() -> i32 {
     1
 }
 
-/// Schema definition for a MongoDB collection, loaded from YAML.
+/// Schema definition for a MongoDB collection.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CollectionSchema {
     /// Collection name.
@@ -116,6 +116,18 @@ pub struct CollectionSchema {
     /// Field definitions.
     #[serde(default)]
     pub fields: Vec<FieldDef>,
+
+    /// Indexes on this collection (discovered at runtime).
+    #[serde(default)]
+    pub indexes: Vec<IndexInfo>,
+
+    /// Source of this schema: "yaml", "introspected", or "merged".
+    #[serde(default = "default_schema_source")]
+    pub source: String,
+}
+
+fn default_schema_source() -> String {
+    "yaml".to_string()
 }
 
 /// A single field definition within a collection schema.
@@ -130,6 +142,38 @@ pub struct FieldDef {
     /// Optional description of what this field contains.
     #[serde(default)]
     pub description: Option<String>,
+}
+
+/// MongoDB index information.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IndexInfo {
+    /// Index name (e.g. "director_1_year_-1").
+    pub name: String,
+    /// Index key fields and their sort direction (1 or -1).
+    pub keys: Vec<IndexKey>,
+    /// Whether this is a unique index.
+    #[serde(default)]
+    pub unique: bool,
+}
+
+/// A single key within an index.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IndexKey {
+    pub field: String,
+    pub direction: i32,
+}
+
+/// Index usage analysis for a query.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IndexAnalysis {
+    /// Whether the query can use an index.
+    pub index_used: bool,
+    /// Name of the matching index, if any.
+    pub matching_index: Option<String>,
+    /// Fields in the query that are NOT indexed.
+    pub unindexed_fields: Vec<String>,
+    /// Suggestions for improving query performance.
+    pub suggestions: Vec<String>,
 }
 
 /// Incoming query request from the API.
@@ -160,6 +204,10 @@ pub struct QueryResponse {
 
     /// The equivalent MongoDB shell command.
     pub mongo_query: String,
+
+    /// Index usage analysis.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index_analysis: Option<IndexAnalysis>,
 }
 
 /// Export format options.

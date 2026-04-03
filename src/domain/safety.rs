@@ -186,6 +186,8 @@ mod tests {
                     description: None,
                 },
             ],
+            indexes: vec![],
+            source: "test".into(),
         }
     }
 
