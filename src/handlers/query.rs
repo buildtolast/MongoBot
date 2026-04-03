@@ -2,7 +2,7 @@ use actix_web::{web, HttpResponse};
 use std::time::Instant;
 
 use crate::domain::executor;
-use crate::domain::models::{QueryRequest, QueryResponse};
+use crate::domain::models::{ConfirmRequest, QueryRequest, QueryResponse};
 use crate::error::AppError;
 use crate::state::AppState;
 
@@ -32,10 +32,29 @@ pub async fn handle_query(
     let schema = state.get_schema(&parsed.collection);
     state.safety.validate(&parsed, schema.as_ref())?;
 
-    // 4. Execute the query against MongoDB
+    // 4. For write operations, return a confirmation request instead of executing
+    if parsed.operation.is_write() {
+        let mongo_query = executor::build_mongo_shell_command(&parsed);
+        let execution_ms = start.elapsed().as_millis() as u64;
+
+        let response = QueryResponse {
+            parsed,
+            results: serde_json::json!(null),
+            count: 0,
+            execution_ms,
+            mongo_query,
+            index_analysis: None,
+            requires_confirmation: true,
+            affected_count: None,
+        };
+
+        return Ok(HttpResponse::Ok().json(response));
+    }
+
+    // 5. Execute the read query against MongoDB
     let result = executor::execute(&state.mongo, &parsed).await?;
 
-    // 5. Build response with index analysis
+    // 6. Build response with index analysis
     let count = query_result_len(&result);
     let results_json = query_result_to_json(&result);
     let execution_ms = start.elapsed().as_millis() as u64;
@@ -49,6 +68,60 @@ pub async fn handle_query(
         execution_ms,
         mongo_query,
         index_analysis,
+        requires_confirmation: false,
+        affected_count: None,
+    };
+
+    Ok(HttpResponse::Ok().json(response))
+}
+
+/// POST /api/execute — Execute a confirmed write operation.
+pub async fn handle_execute(
+    state: web::Data<AppState>,
+    body: web::Json<ConfirmRequest>,
+) -> Result<HttpResponse, AppError> {
+    if !body.confirm {
+        return Err(AppError::Validation("Confirmation required".into()));
+    }
+
+    let parsed = &body.parsed;
+
+    // Validate safety
+    let schema = state.get_schema(&parsed.collection);
+    state.safety.validate(parsed, schema.as_ref())?;
+
+    // Execute the write
+    let start = Instant::now();
+    let result = executor::execute(&state.mongo, parsed).await?;
+    let execution_ms = start.elapsed().as_millis() as u64;
+
+    let mongo_query = executor::build_mongo_shell_command(parsed);
+
+    // Build response with write result data
+    let (count, results_json, affected_count) = match &result {
+        executor::QueryResult::Write(w) => {
+            let affected = w.matched_count.max(w.modified_count);
+            let json = serde_json::json!({
+                "operation": w.operation,
+                "collection": w.collection,
+                "matched_count": w.matched_count,
+                "modified_count": w.modified_count,
+                "inserted_id": w.inserted_id,
+            });
+            (1, json, Some(affected))
+        }
+        other => (query_result_len(other), query_result_to_json(other), None),
+    };
+
+    let response = QueryResponse {
+        parsed: parsed.clone(),
+        results: results_json,
+        count,
+        execution_ms,
+        mongo_query,
+        index_analysis: None,
+        requires_confirmation: false,
+        affected_count,
     };
 
     Ok(HttpResponse::Ok().json(response))
@@ -60,6 +133,7 @@ pub(crate) fn query_result_len(result: &executor::QueryResult) -> usize {
         executor::QueryResult::Documents(docs) => docs.len(),
         executor::QueryResult::Count(_) => 1,
         executor::QueryResult::Values(vals) => vals.len(),
+        executor::QueryResult::Write(_) => 1,
     }
 }
 
@@ -83,6 +157,15 @@ pub(crate) fn query_result_to_json(result: &executor::QueryResult) -> serde_json
                 .filter_map(|v| serde_json::to_value(v).ok())
                 .collect();
             serde_json::json!(json_vals)
+        }
+        executor::QueryResult::Write(w) => {
+            serde_json::json!({
+                "operation": w.operation,
+                "collection": w.collection,
+                "matched_count": w.matched_count,
+                "modified_count": w.modified_count,
+                "inserted_id": w.inserted_id,
+            })
         }
     }
 }

@@ -121,7 +121,7 @@ pub(crate) fn build_prompt(query: &str, schema: &str) -> String {
 Respond with ONLY valid JSON matching this structure:
 {{
   "collection": "collection_name",
-  "operation": "find" | "count" | "aggregate" | "distinct",
+  "operation": "find" | "count" | "aggregate" | "distinct" | "insert" | "update" | "delete",
   "filters": [
     {{
       "field": "field_name",
@@ -131,7 +131,11 @@ Respond with ONLY valid JSON matching this structure:
   ],
   "projection": ["field1", "field2"],
   "sort": {{ "field": "field_name", "order": 1 }},
-  "limit": 100
+  "limit": 100,
+  "document": {{ ... }},
+  "update_fields": {{ ... }},
+  "update_many": false,
+  "delete_many": false
 }}
 
 Rules:
@@ -140,6 +144,10 @@ Rules:
 - For text search use "contains" or "regex" operators.
 - For date comparisons use ISO 8601 strings.
 - "in" and "nin" operators expect array values.
+- For insert: provide "document" with field values matching the schema.
+- For update: provide "filters" to match documents and "update_fields" with new values.
+- For delete: provide "filters" to match documents to delete. Never delete without filters.
+- "update_many" and "delete_many" default to false (single document operations).
 
 ## User Query
 

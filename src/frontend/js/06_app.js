@@ -74,6 +74,11 @@
             showLoading(true);
 
             queryApi(queryText, model).then(function(response) {
+                if (response.requires_confirmation) {
+                    showLoading(false);
+                    showConfirmModal(response);
+                    return;
+                }
                 showLoading(false);
                 renderResults(response);
                 addToHistory(
@@ -140,6 +145,70 @@
                 document.getElementById('query-input').select();
             }
         });
+
+        // Confirmation modal handlers
+        document.getElementById('confirm-close').addEventListener('click', hideConfirmModal);
+        document.getElementById('confirm-cancel').addEventListener('click', hideConfirmModal);
+        document.getElementById('confirm-execute').addEventListener('click', function() {
+            var parsed = AppState.pendingWrite;
+            if (!parsed) return;
+            hideConfirmModal();
+            showLoading(true);
+            executeWrite(parsed).then(function(result) {
+                showLoading(false);
+                renderWriteResult(result);
+            }).catch(function() {
+                showLoading(false);
+            });
+        });
+    }
+
+    function showConfirmModal(response) {
+        AppState.pendingWrite = response.parsed;
+        var modal = document.getElementById('confirm-modal');
+        var op = response.parsed.operation || 'write';
+
+        document.getElementById('confirm-title').textContent =
+            'Confirm ' + op.charAt(0).toUpperCase() + op.slice(1) + ' Operation';
+
+        var detailHtml = '<strong>Collection:</strong> ' + response.parsed.collection + '<br>';
+        if (response.parsed.filters && response.parsed.filters.length > 0) {
+            detailHtml += '<strong>Filter:</strong> ' + response.parsed.filters.length + ' conditions<br>';
+        }
+        if (response.parsed.update_fields) {
+            detailHtml += '<strong>Update:</strong> ' + JSON.stringify(response.parsed.update_fields) + '<br>';
+        }
+        if (response.parsed.document) {
+            detailHtml += '<strong>Document:</strong> ' + JSON.stringify(response.parsed.document).substring(0, 200) + '<br>';
+        }
+        if (response.parsed.update_many) detailHtml += '<strong>Scope:</strong> ALL matching documents<br>';
+        if (response.parsed.delete_many) detailHtml += '<strong>Scope:</strong> ALL matching documents<br>';
+
+        document.getElementById('confirm-operation').innerHTML = detailHtml;
+        document.getElementById('confirm-query').textContent = response.mongo_query || '';
+
+        // Danger styling for deletes
+        var execBtn = document.getElementById('confirm-execute');
+        if (op === 'delete') {
+            execBtn.textContent = 'Delete';
+            document.getElementById('confirm-warning').textContent =
+                'WARNING: This will permanently delete data. This cannot be undone.';
+        } else if (op === 'update') {
+            execBtn.textContent = 'Update';
+            document.getElementById('confirm-warning').textContent =
+                'This will modify existing data. Please review the changes carefully.';
+        } else {
+            execBtn.textContent = 'Insert';
+            document.getElementById('confirm-warning').textContent =
+                'This will insert new data into your database.';
+        }
+
+        modal.hidden = false;
+    }
+
+    function hideConfirmModal() {
+        document.getElementById('confirm-modal').hidden = true;
+        AppState.pendingWrite = null;
     }
 
     // --- Overlay for mobile sidebar ---

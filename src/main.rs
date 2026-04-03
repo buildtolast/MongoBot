@@ -82,6 +82,7 @@ async fn main() -> anyhow::Result<()> {
                 web::scope("/api")
                     .wrap(middleware::auth::AuthMiddleware)
                     .route("/query", web::post().to(handlers::query::handle_query))
+                    .route("/execute", web::post().to(handlers::query::handle_execute))
                     .route("/export", web::get().to(handlers::export::handle_export))
                     .route("/schemas", web::get().to(handlers::schemas::list_schemas))
             )

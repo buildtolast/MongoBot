@@ -245,6 +245,49 @@ function flattenDocument(doc) {
     return flat;
 }
 
+function renderWriteResult(response) {
+    var section = document.getElementById('results-section');
+    var emptyState = document.getElementById('empty-state');
+    emptyState.style.display = 'none';
+    section.hidden = false;
+
+    // Update stats
+    document.getElementById('result-count').textContent =
+        (response.affected_count || 0) + ' affected';
+    document.getElementById('result-time').textContent =
+        response.execution_ms ? response.execution_ms + 'ms' : '';
+    document.getElementById('result-collection').textContent =
+        response.parsed ? response.parsed.collection : '';
+
+    // Update mongo query panel
+    var mongoEl = document.getElementById('mongo-query-cmd');
+    if (response.mongo_query) {
+        mongoEl.textContent = response.mongo_query;
+        mongoEl.hidden = false;
+    }
+
+    // Show write result in table
+    var thead = document.getElementById('results-thead');
+    var tbody = document.getElementById('results-tbody');
+    thead.innerHTML = '<tr><th>Operation</th><th>Collection</th><th>Matched</th><th>Modified</th><th>Status</th></tr>';
+
+    var wr = response.results || {};
+    tbody.innerHTML = '<tr>' +
+        '<td>' + (response.parsed ? response.parsed.operation : '') + '</td>' +
+        '<td>' + (response.parsed ? response.parsed.collection : '') + '</td>' +
+        '<td>' + (wr.matched_count || wr.deleted_count || 0) + '</td>' +
+        '<td>' + (wr.modified_count || wr.inserted_id ? 1 : wr.deleted_count || 0) + '</td>' +
+        '<td style="color:var(--success)">Success</td>' +
+        '</tr>';
+    document.getElementById('pagination').innerHTML = '';
+
+    // Update parsed query
+    var parsedEl = document.getElementById('parsed-query-json');
+    if (response.parsed) {
+        parsedEl.textContent = JSON.stringify(response.parsed, null, 2);
+    }
+}
+
 function renderSchemas(schemas) {
     var container = document.getElementById('schema-list');
     container.innerHTML = '';

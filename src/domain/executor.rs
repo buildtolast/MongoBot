@@ -3,12 +3,23 @@ use crate::domain::models::{ParsedQuery, QueryOperation, Filter, FilterOperator,
 use crate::error::AppError;
 use crate::infra::mongo::MongoPool;
 
+/// Data from a write operation.
+#[derive(Debug)]
+pub struct WriteResultData {
+    pub operation: String,
+    pub collection: String,
+    pub matched_count: u64,
+    pub modified_count: u64,
+    pub inserted_id: Option<String>,
+}
+
 /// Result of executing a MongoDB query.
 #[derive(Debug)]
 pub enum QueryResult {
     Documents(Vec<Document>),
     Count(u64),
     Values(Vec<Bson>),
+    Write(WriteResultData),
 }
 
 /// Execute a parsed query against MongoDB.
@@ -101,6 +112,59 @@ pub async fn execute(pool: &MongoPool, query: &ParsedQuery) -> Result<QueryResul
             }
 
             Ok(QueryResult::Documents(results))
+        }
+
+        QueryOperation::Insert => {
+            let doc_json = query.document.as_ref().ok_or_else(|| {
+                AppError::Validation("Insert operation requires a 'document' field".into())
+            })?;
+            let bson_val = json_to_bson(doc_json)?;
+            let document = match bson_val {
+                Bson::Document(d) => d,
+                _ => return Err(AppError::Validation("Insert document must be a JSON object".into())),
+            };
+            let inserted_id = pool.insert_document(&query.collection, document).await?;
+            Ok(QueryResult::Write(WriteResultData {
+                operation: "insert".to_string(),
+                collection: query.collection.clone(),
+                matched_count: 0,
+                modified_count: 0,
+                inserted_id: Some(inserted_id),
+            }))
+        }
+
+        QueryOperation::Update => {
+            let update_json = query.update_fields.as_ref().ok_or_else(|| {
+                AppError::Validation("Update operation requires 'update_fields'".into())
+            })?;
+            let bson_val = json_to_bson(update_json)?;
+            let update_doc = match bson_val {
+                Bson::Document(d) => d,
+                _ => return Err(AppError::Validation("update_fields must be a JSON object".into())),
+            };
+            let (matched, modified) = pool
+                .update_documents(&query.collection, filter, update_doc, query.update_many)
+                .await?;
+            Ok(QueryResult::Write(WriteResultData {
+                operation: "update".to_string(),
+                collection: query.collection.clone(),
+                matched_count: matched,
+                modified_count: modified,
+                inserted_id: None,
+            }))
+        }
+
+        QueryOperation::Delete => {
+            let deleted = pool
+                .delete_documents(&query.collection, filter, query.delete_many)
+                .await?;
+            Ok(QueryResult::Write(WriteResultData {
+                operation: "delete".to_string(),
+                collection: query.collection.clone(),
+                matched_count: deleted,
+                modified_count: deleted,
+                inserted_id: None,
+            }))
         }
     }
 }
@@ -245,6 +309,33 @@ pub fn build_mongo_shell_command(query: &ParsedQuery) -> String {
                 stages.push(format!("{{ $project: {{ {} }} }}", proj.join(", ")));
             }
             format!("db.{}.aggregate([\n  {}\n])", query.collection, stages.join(",\n  "))
+        }
+
+        QueryOperation::Insert => {
+            let doc_str = query
+                .document
+                .as_ref()
+                .map(|v| serde_json::to_string_pretty(v).unwrap_or_else(|_| "{}".to_string()))
+                .unwrap_or_else(|| "{}".to_string());
+            format!("db.{}.insertOne({})", query.collection, doc_str)
+        }
+
+        QueryOperation::Update => {
+            let update_str = query
+                .update_fields
+                .as_ref()
+                .map(|v| serde_json::to_string_pretty(v).unwrap_or_else(|_| "{}".to_string()))
+                .unwrap_or_else(|| "{}".to_string());
+            let method = if query.update_many { "updateMany" } else { "updateOne" };
+            format!(
+                "db.{}.{}({}, {{ $set: {} }})",
+                query.collection, method, filter_str, update_str
+            )
+        }
+
+        QueryOperation::Delete => {
+            let method = if query.delete_many { "deleteMany" } else { "deleteOne" };
+            format!("db.{}.{}({})", query.collection, method, filter_str)
         }
     }
 }

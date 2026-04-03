@@ -46,6 +46,10 @@ mod tests {
             projection: vec![],
             sort: None,
             limit: 100,
+            document: None,
+            update_fields: None,
+            update_many: false,
+            delete_many: false,
         };
         assert!(validate_parsed_query(&query).is_ok());
     }
@@ -59,6 +63,10 @@ mod tests {
             projection: vec![],
             sort: None,
             limit: 100,
+            document: None,
+            update_fields: None,
+            update_many: false,
+            delete_many: false,
         };
         assert!(validate_parsed_query(&query).is_err());
     }
@@ -72,6 +80,10 @@ mod tests {
             projection: vec![],
             sort: None,
             limit: 0,
+            document: None,
+            update_fields: None,
+            update_many: false,
+            delete_many: false,
         };
         assert!(validate_parsed_query(&query).is_err());
     }
@@ -89,6 +101,10 @@ mod tests {
             projection: vec![],
             sort: None,
             limit: 100,
+            document: None,
+            update_fields: None,
+            update_many: false,
+            delete_many: false,
         };
         assert!(validate_parsed_query(&query).is_err());
     }

@@ -79,6 +79,26 @@
       </div>
     </section>
     <div id="error-toast" class="toast" hidden></div>
+    <div id="confirm-modal" class="modal-overlay" hidden>
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3 id="confirm-title">Confirm Write Operation</h3>
+          <button id="confirm-close" class="modal-close">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div id="confirm-warning" class="confirm-warning">
+            This will modify data in your database. Please review carefully.
+          </div>
+          <div id="confirm-operation" class="confirm-detail"></div>
+          <pre id="confirm-query" class="code-block mongo-code"></pre>
+          <div id="confirm-preview" class="confirm-detail"></div>
+        </div>
+        <div class="modal-footer">
+          <button id="confirm-cancel" class="modal-btn modal-btn-cancel">Cancel</button>
+          <button id="confirm-execute" class="modal-btn modal-btn-danger">Execute Write</button>
+        </div>
+      </div>
+    </div>
   </main>
 </div>
 <script>

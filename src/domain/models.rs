@@ -25,6 +25,22 @@ pub struct ParsedQuery {
     /// Maximum number of documents to return.
     #[serde(default = "default_limit")]
     pub limit: usize,
+
+    /// Document to insert (for insert operations).
+    #[serde(default)]
+    pub document: Option<serde_json::Value>,
+
+    /// Fields to update (for update operations). Maps field names to new values.
+    #[serde(default)]
+    pub update_fields: Option<serde_json::Value>,
+
+    /// Whether to update all matching documents (default: false = updateOne).
+    #[serde(default)]
+    pub update_many: bool,
+
+    /// Whether to delete all matching documents (default: false = deleteOne).
+    #[serde(default)]
+    pub delete_many: bool,
 }
 
 fn default_limit() -> usize {
@@ -39,6 +55,9 @@ pub enum QueryOperation {
     Count,
     Aggregate,
     Distinct,
+    Insert,
+    Update,
+    Delete,
 }
 
 impl Default for QueryOperation {
@@ -55,7 +74,15 @@ impl QueryOperation {
             Self::Count => "count",
             Self::Aggregate => "aggregate",
             Self::Distinct => "distinct",
+            Self::Insert => "insert",
+            Self::Update => "update",
+            Self::Delete => "delete",
         }
+    }
+
+    /// Returns true if this is a write operation (insert/update/delete).
+    pub fn is_write(&self) -> bool {
+        matches!(self, Self::Insert | Self::Update | Self::Delete)
     }
 }
 
@@ -208,6 +235,14 @@ pub struct QueryResponse {
     /// Index usage analysis.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub index_analysis: Option<IndexAnalysis>,
+
+    /// Whether this is a write operation requiring confirmation.
+    #[serde(default)]
+    pub requires_confirmation: bool,
+
+    /// Number of documents affected by write operation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub affected_count: Option<u64>,
 }
 
 /// Export format options.
@@ -227,6 +262,25 @@ pub struct ExportParams {
     /// Export format.
     #[serde(default)]
     pub format: Option<ExportFormat>,
+}
+
+/// Result of a write operation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WriteResult {
+    pub operation: String,
+    pub collection: String,
+    pub matched_count: u64,
+    pub modified_count: u64,
+    pub inserted_id: Option<String>,
+}
+
+/// Confirmation request — client sends this back to execute a write.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfirmRequest {
+    /// The original parsed query to execute.
+    pub parsed: ParsedQuery,
+    /// Confirmation token (prevents replay).
+    pub confirm: bool,
 }
 
 #[cfg(test)]
@@ -259,6 +313,10 @@ mod tests {
         assert!(query.filters.is_empty());
         assert!(query.projection.is_empty());
         assert!(query.sort.is_none());
+        assert!(query.document.is_none());
+        assert!(query.update_fields.is_none());
+        assert!(!query.update_many);
+        assert!(!query.delete_many);
     }
 
     #[test]

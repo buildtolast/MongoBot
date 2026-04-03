@@ -17,6 +17,9 @@ pub enum SafetyError {
 
     #[error("Collection '{0}' not found in schema")]
     UnknownCollection(String),
+
+    #[error("Write operation '{op}' requires {requirement}")]
+    WriteValidation { op: String, requirement: String },
 }
 
 /// Validates parsed queries against safety rules.
@@ -65,7 +68,50 @@ impl SafetyChecker {
             check_injection(&sort.field)?;
         }
 
-        // 4. If schema is available, validate fields exist
+        // 4. Validate write-specific safety rules
+        match query.operation {
+            crate::domain::models::QueryOperation::Insert => {
+                let doc = query.document.as_ref();
+                let is_empty = doc.map_or(true, |v| {
+                    v.as_object().map_or(true, |m| m.is_empty())
+                });
+                if is_empty {
+                    return Err(SafetyError::WriteValidation {
+                        op: "insert".into(),
+                        requirement: "a non-empty document".into(),
+                    });
+                }
+            }
+            crate::domain::models::QueryOperation::Update => {
+                if query.filters.is_empty() {
+                    return Err(SafetyError::WriteValidation {
+                        op: "update".into(),
+                        requirement: "at least one filter".into(),
+                    });
+                }
+                let fields = query.update_fields.as_ref();
+                let is_empty = fields.map_or(true, |v| {
+                    v.as_object().map_or(true, |m| m.is_empty())
+                });
+                if is_empty {
+                    return Err(SafetyError::WriteValidation {
+                        op: "update".into(),
+                        requirement: "at least one update field".into(),
+                    });
+                }
+            }
+            crate::domain::models::QueryOperation::Delete => {
+                if query.filters.is_empty() {
+                    return Err(SafetyError::WriteValidation {
+                        op: "delete".into(),
+                        requirement: "at least one filter (cannot delete without filters)".into(),
+                    });
+                }
+            }
+            _ => {}
+        }
+
+        // 5. If schema is available, validate fields exist
         if let Some(schema) = schema {
             let known_fields: Vec<&str> = schema.fields.iter().map(|f| f.name.as_str()).collect();
 
@@ -160,6 +206,9 @@ mod tests {
                 "count".into(),
                 "distinct".into(),
                 "aggregate".into(),
+                "insert".into(),
+                "update".into(),
+                "delete".into(),
             ],
             10000,
         )
@@ -205,6 +254,10 @@ mod tests {
             projection: vec!["name".into()],
             sort: None,
             limit: 100,
+            document: None,
+            update_fields: None,
+            update_many: false,
+            delete_many: false,
         };
         assert!(checker.validate(&query, Some(&test_schema())).is_ok());
     }
@@ -219,6 +272,10 @@ mod tests {
             projection: vec![],
             sort: None,
             limit: 100,
+            document: None,
+            update_fields: None,
+            update_many: false,
+            delete_many: false,
         };
         let result = checker.validate(&query, None);
         assert!(matches!(result, Err(SafetyError::DisallowedOperation(_))));
@@ -234,6 +291,10 @@ mod tests {
             projection: vec![],
             sort: None,
             limit: 200,
+            document: None,
+            update_fields: None,
+            update_many: false,
+            delete_many: false,
         };
         let result = checker.validate(&query, None);
         assert!(matches!(result, Err(SafetyError::LimitExceeded { .. })));
@@ -253,6 +314,10 @@ mod tests {
             projection: vec![],
             sort: None,
             limit: 100,
+            document: None,
+            update_fields: None,
+            update_many: false,
+            delete_many: false,
         };
         let result = checker.validate(&query, None);
         assert!(matches!(result, Err(SafetyError::InjectionDetected(_))));
@@ -272,9 +337,70 @@ mod tests {
             projection: vec![],
             sort: None,
             limit: 100,
+            document: None,
+            update_fields: None,
+            update_many: false,
+            delete_many: false,
         };
         let result = checker.validate(&query, Some(&test_schema()));
         assert!(matches!(result, Err(SafetyError::UnknownField { .. })));
+    }
+
+    #[test]
+    fn test_delete_requires_filter() {
+        let checker = test_checker();
+        let query = ParsedQuery {
+            collection: "users".into(),
+            operation: QueryOperation::Delete,
+            filters: vec![],
+            projection: vec![],
+            sort: None,
+            limit: 100,
+            document: None,
+            update_fields: None,
+            update_many: false,
+            delete_many: true,
+        };
+        let result = checker.validate(&query, None);
+        assert!(matches!(result, Err(SafetyError::WriteValidation { .. })));
+    }
+
+    #[test]
+    fn test_insert_requires_document() {
+        let checker = test_checker();
+        let query = ParsedQuery {
+            collection: "users".into(),
+            operation: QueryOperation::Insert,
+            filters: vec![],
+            projection: vec![],
+            sort: None,
+            limit: 100,
+            document: None,
+            update_fields: None,
+            update_many: false,
+            delete_many: false,
+        };
+        let result = checker.validate(&query, None);
+        assert!(matches!(result, Err(SafetyError::WriteValidation { .. })));
+    }
+
+    #[test]
+    fn test_update_requires_filter_and_fields() {
+        let checker = test_checker();
+        let query = ParsedQuery {
+            collection: "users".into(),
+            operation: QueryOperation::Update,
+            filters: vec![],
+            projection: vec![],
+            sort: None,
+            limit: 100,
+            document: None,
+            update_fields: Some(serde_json::json!({"name": "Bob"})),
+            update_many: false,
+            delete_many: false,
+        };
+        let result = checker.validate(&query, None);
+        assert!(matches!(result, Err(SafetyError::WriteValidation { .. })));
     }
 
     #[test]

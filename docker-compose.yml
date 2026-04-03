@@ -15,7 +15,7 @@ services:
       PORT: "3000"
       RUST_LOG: info
       MAX_RESULT_ROWS: "10000"
-      ALLOWED_OPERATIONS: find,count,distinct,aggregate
+      ALLOWED_OPERATIONS: find,count,distinct,aggregate,insert,update,delete
     depends_on:
       mongo:
         condition: service_started

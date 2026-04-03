@@ -42,6 +42,14 @@ pub async fn handle_export(
             .into_iter()
             .map(|v| mongodb::bson::doc! { "value": v })
             .collect(),
+        QueryResult::Write(w) => {
+            vec![mongodb::bson::doc! {
+                "operation": &w.operation,
+                "collection": &w.collection,
+                "matched_count": w.matched_count as i64,
+                "modified_count": w.modified_count as i64,
+            }]
+        }
     };
 
     // 7. Format and return with Content-Disposition header

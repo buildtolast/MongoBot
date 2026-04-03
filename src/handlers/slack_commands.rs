@@ -173,6 +173,16 @@ fn format_slack_result(collection: &str, operation: &str, result: &QueryResult) 
                 preview.join(", ")
             )
         }
+        QueryResult::Write(w) => {
+            let id_info = w.inserted_id.as_deref().map_or(String::new(), |id| format!("\nInserted ID: `{id}`"));
+            format!(
+                "*{op}* on `{coll}` -- matched: {matched}, modified: {modified}{id_info}",
+                op = w.operation,
+                coll = w.collection,
+                matched = w.matched_count,
+                modified = w.modified_count,
+            )
+        }
     }
 }
 

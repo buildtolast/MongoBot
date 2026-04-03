@@ -194,6 +194,53 @@ impl MongoPool {
         Ok(indexes)
     }
 
+    /// Insert a single document.
+    pub async fn insert_document(
+        &self,
+        collection_name: &str,
+        document: Document,
+    ) -> Result<String, AppError> {
+        let coll = self.collection(collection_name);
+        let result = coll.insert_one(document).await?;
+        Ok(result.inserted_id.to_string())
+    }
+
+    /// Update documents matching a filter.
+    pub async fn update_documents(
+        &self,
+        collection_name: &str,
+        filter: Document,
+        update: Document,
+        many: bool,
+    ) -> Result<(u64, u64), AppError> {
+        let coll = self.collection(collection_name);
+        let update_doc = doc! { "$set": update };
+        if many {
+            let result = coll.update_many(filter, update_doc).await?;
+            Ok((result.matched_count, result.modified_count))
+        } else {
+            let result = coll.update_one(filter, update_doc).await?;
+            Ok((result.matched_count, result.modified_count))
+        }
+    }
+
+    /// Delete documents matching a filter.
+    pub async fn delete_documents(
+        &self,
+        collection_name: &str,
+        filter: Document,
+        many: bool,
+    ) -> Result<u64, AppError> {
+        let coll = self.collection(collection_name);
+        if many {
+            let result = coll.delete_many(filter).await?;
+            Ok(result.deleted_count)
+        } else {
+            let result = coll.delete_one(filter).await?;
+            Ok(result.deleted_count)
+        }
+    }
+
     /// Get distinct values for a field.
     pub async fn distinct_values(
         &self,

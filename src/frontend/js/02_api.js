@@ -51,6 +51,26 @@ function abortCurrentQuery() {
     }
 }
 
+async function executeWrite(parsedQuery) {
+    try {
+        var resp = await fetch(API_BASE + '/api/execute', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ parsed: parsedQuery, confirm: true })
+        });
+        if (!resp.ok) {
+            var errBody = await resp.text();
+            var errMsg;
+            try { errMsg = JSON.parse(errBody).error || errBody; } catch(_) { errMsg = errBody; }
+            throw new Error(errMsg);
+        }
+        return await resp.json();
+    } catch (err) {
+        showError(err.message || 'Write operation failed');
+        throw err;
+    }
+}
+
 async function fetchSchemas() {
     try {
         var resp = await fetch(API_BASE + '/api/schemas');

@@ -16,7 +16,8 @@ var AppState = {
     ollamaConnected: false,
     loading: false,
     sortColumn: null,
-    sortDirection: 'asc'
+    sortDirection: 'asc',
+    pendingWrite: null
 };
 
 var HISTORY_KEY = 'mqb_query_history';
