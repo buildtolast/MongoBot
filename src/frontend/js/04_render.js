@@ -167,7 +167,7 @@ function renderTable(documents) {
                 AppState.sortColumn = col;
                 AppState.sortDirection = 'asc';
             }
-            renderTable(AppState.lastResults.documents);
+            renderTable(AppState.lastResults.results);
         });
         headerRow.appendChild(th);
     });
@@ -401,7 +401,7 @@ function renderPagination(total, page, pageSize) {
     prevBtn.disabled = page <= 1;
     prevBtn.addEventListener('click', function() {
         AppState.currentPage = Math.max(1, page - 1);
-        renderTable(AppState.lastResults.documents);
+        renderTable(AppState.lastResults.results);
     });
     container.appendChild(prevBtn);
 
@@ -441,7 +441,7 @@ function renderPagination(total, page, pageSize) {
     nextBtn.disabled = page >= totalPages;
     nextBtn.addEventListener('click', function() {
         AppState.currentPage = Math.min(totalPages, page + 1);
-        renderTable(AppState.lastResults.documents);
+        renderTable(AppState.lastResults.results);
     });
     container.appendChild(nextBtn);
 }
@@ -452,7 +452,7 @@ function createPageBtn(num, currentPage) {
     if (num === currentPage) btn.className = 'active';
     btn.addEventListener('click', function() {
         AppState.currentPage = num;
-        renderTable(AppState.lastResults.documents);
+        renderTable(AppState.lastResults.results);
     });
     return btn;
 }
