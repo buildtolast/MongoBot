@@ -83,6 +83,81 @@
     --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.6);
 }
 
+/* Dim — dark sidebar, lighter main area (hybrid) */
+[data-theme="dim"] {
+    --bg-primary: #1c2128;
+    --bg-secondary: #22272e;
+    --bg-tertiary: #2d333b;
+    --bg-input: #1c2128;
+    --border: #444c56;
+    --border-light: #545d68;
+    --text-primary: #cdd9e5;
+    --text-secondary: #8b949e;
+    --text-muted: #768390;
+    --accent: #539bf5;
+    --accent-hover: #6cb6ff;
+    --accent-bg: rgba(83, 155, 245, 0.1);
+    --success: #57ab5a;
+    --success-bg: rgba(87, 171, 90, 0.12);
+    --warning: #c69026;
+    --warning-bg: rgba(198, 144, 38, 0.12);
+    --danger: #e5534b;
+    --danger-bg: rgba(229, 83, 75, 0.12);
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.25);
+    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.35);
+    --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+/* Nord — muted arctic palette (hybrid) */
+[data-theme="nord"] {
+    --bg-primary: #2e3440;
+    --bg-secondary: #3b4252;
+    --bg-tertiary: #434c5e;
+    --bg-input: #2e3440;
+    --border: #4c566a;
+    --border-light: #5a657a;
+    --text-primary: #eceff4;
+    --text-secondary: #d8dee9;
+    --text-muted: #81a1c1;
+    --accent: #88c0d0;
+    --accent-hover: #8fbcbb;
+    --accent-bg: rgba(136, 192, 208, 0.1);
+    --success: #a3be8c;
+    --success-bg: rgba(163, 190, 140, 0.12);
+    --warning: #ebcb8b;
+    --warning-bg: rgba(235, 203, 139, 0.12);
+    --danger: #bf616a;
+    --danger-bg: rgba(191, 97, 106, 0.12);
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.35);
+    --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+/* Warm — soft warm tones, easy on the eyes (hybrid) */
+[data-theme="warm"] {
+    --bg-primary: #1a1612;
+    --bg-secondary: #231f1b;
+    --bg-tertiary: #2e2924;
+    --bg-input: #1a1612;
+    --border: #3d3630;
+    --border-light: #524a42;
+    --text-primary: #e8ddd0;
+    --text-secondary: #a89a8c;
+    --text-muted: #7a6e62;
+    --accent: #e0976b;
+    --accent-hover: #f0b088;
+    --accent-bg: rgba(224, 151, 107, 0.1);
+    --success: #8cba7a;
+    --success-bg: rgba(140, 186, 122, 0.12);
+    --warning: #d4a843;
+    --warning-bg: rgba(212, 168, 67, 0.12);
+    --danger: #d47766;
+    --danger-bg: rgba(212, 119, 102, 0.12);
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
+    --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+
 /* Solarized Dark theme */
 [data-theme="solarized"] {
     --bg-primary: #002b36;
