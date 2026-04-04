@@ -2,7 +2,7 @@
 
 ## Current Status (as of 2026-04-04)
 
-**v0.2.0 — Fully implemented (25+ commits, 22 source files, 17 frontend files):**
+**v0.3.0 — Fully implemented (31 commits, 72 tests, pushed to github.com/buildtolast/MongoBot):**
 - Full project scaffold with actix-web 4, build.rs frontend assembly, config, error handling
 - MongoDB client with connection pooling, find/count/distinct/insert/update operations
 - Domain models, runtime schema introspection (14+ collections auto-discovered), safety checker, query executor
@@ -26,7 +26,8 @@
 - Web UI with NL query bar, results table, query inspector, schema browser
 - CSV and JSON export with file download
 - Slack slash command + event handlers
-- 72 unit tests
+- 7 themes: Dark, Dim, Light, Nord, Midnight, Warm, Solarized (persisted to localStorage)
+- 72 unit tests, 37 integration tests (configurable model via TEST_MODEL)
 - docs/ folder with mongodb_query_reference.md and query_audit_report.md
 
 **Key deviations from original plan:**
