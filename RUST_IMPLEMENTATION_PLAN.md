@@ -1,16 +1,28 @@
 # Slack-Mongo Query Bot — Rust Implementation Plan
 
-## Current Status (as of 2026-04-03)
+## Current Status (as of 2026-04-04)
 
-**Implemented (Phases 1-8 complete):**
+**v0.2.0 — Fully implemented (20+ commits):**
 - Full project scaffold with actix-web 4, build.rs frontend assembly, config, error handling
-- MongoDB client with connection pooling, find/count/distinct operations
-- Domain models, schema YAML loading, safety checker, query executor
-- LLM client with Ollama integration (switched from `ollama-rs` to **direct HTTP calls via reqwest**)
+- MongoDB client with connection pooling, find/count/distinct/insert/update operations
+- Domain models, runtime schema introspection (14+ collections auto-discovered), safety checker, query executor
+- LLM client with Ollama integration via direct HTTP calls (reqwest), live model selection
+- Query Advisor with 14 validation rules (unbounded, missing index, $ne/$nin, regex, collection scan, etc.)
+- Preview/approval mode: review parsed queries before execution
+- CRUD support: insert and update with confirmation dialog + backup download
+- Date auto-conversion: ISO strings and year numbers coerced to BSON DateTime
+- `$elemMatch` auto-grouping for array element queries
+- Same-field filter merging for range queries
+- MongoDB query viewer panel (shell commands)
+- Index analysis (which indexes are used per query)
+- Schema refresh at runtime (POST /api/schemas/refresh)
+- Abort button for canceling queries
+- Model selection endpoint (GET /api/models)
 - Web UI with NL query bar, results table, query inspector, schema browser
 - CSV and JSON export with file download
-- Slack slash command handler
-- 40 unit tests
+- Slack slash command + event handlers
+- 72 unit tests
+- docs/ folder with mongodb_query_reference.md and query_audit_report.md
 
 **Key deviations from original plan:**
 - **No `ollama-rs` crate** — replaced with direct HTTP POST to Ollama `/api/generate` endpoint via reqwest. Simpler dependency, more control over request/response handling
@@ -18,13 +30,27 @@
 - **No `actix-governor`** — rate limiting not yet implemented
 - **No `regex`** — not needed in current implementation
 - **Added `actix-cors 0.7`** — required for proper CORS preflight (OPTIONS) handling
-- **Database switched** from `myapp` to `movies` with real sample data (15 movies, 10 actors, 15 reviews with indexes)
+- **Database switched** from `myapp` to `movies` with 14+ collections auto-discovered at runtime
 - **Default model** changed from `llama3.2` to `qwen3-coder:30b` (better JSON schema compliance)
 - **Docker Compose** no longer includes Ollama service — runs on host machine, bot uses `host.docker.internal`
+- **CRUD operations** added (insert, update) beyond original read-only scope
+- **Schema introspection** replaced static YAML files with runtime MongoDB introspection
+- **Query advisor** added as new module not in original plan
 
-**Not yet implemented (Phases 9-11):**
-- Slack events (app mentions), interactive modals
-- WebSocket progress updates during query execution
+**Known gaps (from audit report):**
+- No `$or` logical operator support — `FilterOperator` enum lacks an `Or` variant
+- Limited aggregation pipeline support (basic only)
+- No `$text` search operator
+- No `LARGE_IN_ARRAY` warning for `$in` with >200 values
+- Explicit `$and` not supported (implicit only; same-field merge handles common case)
+
+**Future extension ideas:**
+- `$or` support (requires `ParsedQuery` model changes or raw filter passthrough)
+- Full aggregation pipeline builder (group, unwind, lookup)
+- Text index support (`$text` search)
+- WebSocket progress for long-running queries
+- Slack interactive modals for query refinement
+- Rate limiting via `actix-governor`
 - Integration tests
 
 ---

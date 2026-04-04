@@ -29,10 +29,13 @@ Slack:    User types /mongo find active users from last week → bot posts resul
 | Feature | Endpoint | Description |
 |---------|----------|-------------|
 | Dashboard | `GET /` | Serves embedded `index.html` (query bar, results, schema browser) |
-| Query | `POST /api/query` | NL query → JSON response with parsed query + results |
+| Query | `POST /api/query` | NL query → JSON response with parsed query + results (supports preview mode) |
+| Execute | `POST /api/execute` | Execute a previously previewed/confirmed query (CRUD confirmation flow) |
 | Export CSV | `GET /api/export?format=csv` | Re-runs query, streams CSV file download |
 | Export JSON | `GET /api/export?format=json` | Re-runs query, streams JSON file download |
 | Schemas | `GET /api/schemas` | Lists available collections and fields |
+| Refresh Schemas | `POST /api/schemas/refresh` | Re-introspect MongoDB for new/changed collections |
+| Models | `GET /api/models` | List available Ollama models for live model switching |
 | WebSocket | `WS /ws/live` | Real-time query progress updates |
 
 #### Slack Bot
@@ -68,9 +71,11 @@ App::new()
     .route("/api/slack/actions",  POST → handle_action)
 
     // Web UI API (auth-guarded if DASHBOARD_TOKEN set)
-    .route("/api/query",   POST → handle_query)
-    .route("/api/export",  GET  → handle_export)
-    .route("/api/schemas", GET  → list_schemas)
+    .route("/api/query",           POST → handle_query)
+    .route("/api/execute",         POST → handle_execute)
+    .route("/api/export",          GET  → handle_export)
+    .route("/api/schemas",         GET  → list_schemas)
+    .route("/api/schemas/refresh", POST → refresh_schemas)
 
     // WebSocket
     .route("/ws/live", GET → ws_handler)
@@ -105,15 +110,17 @@ Both the Web UI and Slack handlers call into the **same** processing pipeline:
 "find active users from last week"
           │
           ▼
-┌─── 1. Schema Context ───┐
-│ Load YAML from DashMap   │
-│ cache (lock-free reads)  │
-└──────────┬───────────────┘
+┌─── 1. Schema Context ────┐
+│ Auto-discovered from      │
+│ MongoDB (14+ collections) │
+│ DashMap cache (lock-free) │
+└──────────┬────────────────┘
            ▼
 ┌─── 2. NLP Parser ────────┐
 │ Ollama (local, default)  │
 │ FormatType::Json mode    │
 │ NL → ParsedQuery struct  │
+│ Live model selection     │
 └──────────┬───────────────┘
            ▼
 ┌─── 3. Safety Checker ────┐
@@ -123,16 +130,38 @@ Both the Web UI and Slack handlers call into the **same** processing pipeline:
 │ Injection detection       │
 └──────────┬───────────────┘
            ▼
-┌─── 4. Query Executor ────┐
+┌─── 3b. Query Advisor ───┐
+│ 14 validation rules      │
+│ Index usage analysis     │
+│ Performance warnings     │
+│ ($ne, $nin, unbounded)   │
+└──────────┬───────────────┘
+           ▼
+┌─── 4. Preview / Execute ─┐
+│ If approval toggle ON:   │
+│   → Return parsed query  │
+│   → User reviews + edits │
+│   → POST /api/execute    │
+│ If toggle OFF:           │
+│   → Execute immediately  │
+└──────────┬───────────────┘
+           ▼
+┌─── 5. Query Executor ────┐
 │ Build BSON filter/sort   │
-│ find / count / distinct  │
+│ Date coercion (ISO/year) │
+│ $elemMatch auto-grouping │
+│ Same-field filter merge  │
+│ find/count/distinct/     │
+│ insert/update + confirm  │
 │ 30s timeout              │
 └──────────┬───────────────┘
            ▼
-┌─── 5. Response ──────────┐
+┌─── 6. Response ──────────┐
 │ Web UI: JSON response    │
+│   + mongo shell command  │
+│   + index analysis       │
+│   + query advice         │
 │   + optional CSV/JSON    │
-│     file download        │
 │ Slack: Block Kit message │
 │   via response_url       │
 └──────────────────────────┘
@@ -140,9 +169,9 @@ Both the Web UI and Slack handlers call into the **same** processing pipeline:
 
 #### Step 1: Schema Context Loading
 
-Collection schemas are loaded from `schemas/*.yaml` files at startup and cached in a `DashMap` (lock-free concurrent hashmap). The schema provides field names, types, and descriptions that the LLM uses to generate accurate queries.
+Collection schemas are auto-discovered from MongoDB at runtime via runtime introspection (sampling documents to infer field names and types, including array element introspection). Schemas are cached in a `DashMap` (lock-free concurrent hashmap). The schema provides field names, types, and descriptions that the LLM uses to generate accurate queries. Users can refresh schemas at runtime via `POST /api/schemas/refresh` to detect new collections without restarting.
 
-The default database is `movies`, containing 3 collections with sample data:
+The default database is `movies`, with 14+ collections auto-discovered. The seed data includes:
 - `movies` (15 documents) — title, year, genre, rating, director, etc.
 - `actors` (10 documents) — name, birth year, nationality, filmography
 - `reviews` (15 documents) — movie reference, reviewer, score, text
@@ -216,10 +245,20 @@ Output (ParsedQuery):
 
 | Check | Blocks |
 |-------|--------|
-| Operation whitelist (find, count, distinct, aggregate) | delete, update, drop, insert |
+| Operation whitelist (find, count, distinct, aggregate, insert, update) | delete, drop |
 | Field whitelist (must exist in schema) | Typos, hallucinated fields, injection via field names |
 | Limit enforcement (default max: 10,000) | Unbounded queries |
 | Injection detection | `$where`, `__proto__`, `constructor` patterns |
+
+**Query Advisor (14 rules):** Runs after safety validation to provide warnings and optimization hints:
+- Unbounded query detection (no filters)
+- Large limit warnings (>1000)
+- Missing index warnings
+- `$ne` / `$nin` operator performance warnings
+- Regex without anchor performance warnings
+- Collection scan detection
+- Sort without index warnings
+- Projection recommendations for large documents
 
 #### Step 4: Query Executor
 
@@ -227,6 +266,15 @@ Converts `ParsedQuery` to MongoDB operations:
 - `find` → `collection.find(filter).with_options(sort, limit, projection)`
 - `count` → `collection.count_documents(filter)`
 - `distinct` → `collection.distinct(field, filter)`
+- `insert` → `collection.insert_one(document)` (with confirmation dialog + backup download)
+- `update` → `collection.update_many(filter, update)` (with confirmation + backup)
+
+**Executor features:**
+- Date auto-conversion: ISO strings and plain year numbers (e.g. `2020`) are coerced to BSON DateTime via `coerce_value_for_field()` and `try_parse_datetime()`
+- `$elemMatch` auto-grouping: filters on array element sub-fields are automatically wrapped in `$elemMatch`
+- Same-field filter merging: multiple conditions on the same field (e.g. `price > 10 AND price < 100`) are merged into a single BSON sub-document instead of overwriting
+- MongoDB shell command generation: `build_mongo_shell_command()` produces the equivalent `db.collection.find(...)` command for the query viewer panel
+- Index analysis: `analyze_index_usage()` reports which indexes would be used
 
 All queries wrapped in `tokio::time::timeout(30s)`.
 
@@ -276,11 +324,19 @@ src/frontend/
 | Feature | Description |
 |---------|-------------|
 | NL Query Bar | Text input + submit button, shows loading spinner during LLM parsing |
+| Approval Toggle | Preview parsed queries before execution; review and confirm |
+| Abort Button | Cancel in-progress queries |
 | Results Table | Paginated table with sortable columns, auto-detected from document fields |
 | Query Inspector | Collapsible panel showing the `ParsedQuery` JSON the LLM generated |
+| MongoDB Query Viewer | Panel showing actual shell commands (`db.collection.find(...)`) |
+| Index Analysis | Shows which indexes are used per query |
+| Query Advisor | 14-rule analysis with warnings and optimization hints |
+| Model Selector | Switch Ollama models at runtime without restart |
 | CSV Download | Button triggers file download via `/api/export?format=csv` |
 | JSON Download | Button triggers file download via `/api/export?format=json` |
+| CRUD Confirmation | Insert/update operations show confirmation dialog + backup download |
 | Schema Browser | Sidebar listing collections and their fields (from `/api/schemas`) |
+| Schema Refresh | Button to re-introspect MongoDB for new collections |
 | Query History | Recent queries saved in `localStorage`, click to re-run |
 | Execution Stats | Shows query time, document count, collection name |
 
@@ -335,8 +391,8 @@ User                    Slack                    Server
 │     Ollama      │     │     MongoDB      │     │  Slack API      │
 │  localhost:11434│     │  localhost:27017  │     │  api.slack.com  │
 │                 │     │                  │     │                 │
-│  llama3.2 model │     │  App database    │     │  (optional)     │
-│  JSON mode      │     │  Read-only ops   │     │  Webhooks in    │
+│  qwen3-coder    │     │  App database    │     │  (optional)     │
+│  JSON mode      │     │  Read + write    │     │  Webhooks in    │
 │  ~200-500ms     │     │  Pool: 2-20 conn │     │  Results out    │
 │                 │     │                  │     │                 │
 │  PRIMARY        │     │  REQUIRED        │     │  OPTIONAL       │
@@ -362,30 +418,35 @@ src/
 │   └── llm.rs             → LlmClient: Ollama via direct HTTP (reqwest), cloud fallback
 │
 ├── domain/                → Business logic (no framework dependencies)
-│   ├── models.rs          → ParsedQuery, Filter, QueryRequest/Response, ExportFormat
+│   ├── models.rs          → ParsedQuery, Filter, QueryRequest/Response, ExportFormat, IndexInfo
 │   ├── parser.rs          → build_prompt(), parse_llm_response()
-│   ├── executor.rs        → ParsedQuery → BSON → MongoDB → QueryResult
+│   ├── executor.rs        → ParsedQuery → BSON → MongoDB → QueryResult (date coercion, $elemMatch, filter merge)
 │   ├── safety.rs          → SafetyChecker: validate fields, ops, limits
+│   ├── query_advisor.rs   → analyze_query(): 14 validation rules, warnings, optimization hints
 │   └── export.rs          → documents_to_csv(), documents_to_json()
 │
 ├── handlers/              → Actix-web request handlers
-│   ├── query.rs           → POST /api/query (Web UI)
+│   ├── query.rs           → POST /api/query (with preview mode) + POST /api/execute (CRUD confirm)
 │   ├── export.rs          → GET /api/export (CSV/JSON download)
-│   ├── schemas.rs         → GET /api/schemas
+│   ├── schemas.rs         → GET /api/schemas + POST /api/schemas/refresh
 │   ├── slack_commands.rs  → Slack slash command + event handlers
 │   ├── slack_actions.rs   → Interactive component callbacks
 │   ├── ws.rs              → WebSocket /ws/live
-│   └── health.rs          → GET /api/health
+│   └── health.rs          → GET /api/health + GET /api/models + GET /api/version
 │
 ├── middleware/
 │   ├── auth.rs            → Bearer token (constant-time via subtle)
 │   └── slack_verify.rs    → HMAC-SHA256 signing secret
 │
-└── frontend/              → Embedded web UI (compile-time assembled)
-    ├── mod.rs             → include_str!(OUT_DIR/index.html), serve_index()
-    ├── shell_*.html       → HTML wrapper fragments
-    ├── styles/*.css       → 7 CSS files (numbered for concat order)
-    └── js/*.js            → 6 JS files (numbered for init order)
+├── frontend/              → Embedded web UI (compile-time assembled)
+│   ├── mod.rs             → include_str!(OUT_DIR/index.html), serve_index()
+│   ├── shell_*.html       → HTML wrapper fragments
+│   ├── styles/*.css       → 7 CSS files (numbered for concat order)
+│   └── js/*.js            → 6 JS files (numbered for init order)
+│
+docs/                      → Reference documentation
+├── mongodb_query_reference.md → Comprehensive MongoDB query syntax reference
+└── query_audit_report.md      → Audit of implementation vs. reference
 ```
 
 ---
