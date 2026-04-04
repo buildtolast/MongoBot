@@ -149,7 +149,7 @@ JSON format (REQUIRED fields: collection, operation, filters, limit):
   "update_fields": {{}}
 }}
 
-Rules: Use only fields from schema. Default limit 100. For distinct: put the target field name in "projection" array. For insert: set "document". For update: set "filters" + "update_fields". Prefer indexed fields for filters/sort. For array fields use dot notation (e.g. "transactions.symbol") — when filtering on multiple sub-fields of the same array, list each as a separate filter and they will be matched on the same array element.
+Rules: Use only fields from schema. Default limit 100. For date fields always use ISO 8601 format "YYYY-MM-DDT00:00:00Z" (e.g. "2010-01-01T00:00:00Z"), never bare years. For distinct: put the target field name in "projection" array. For insert: set "document". For update: set "filters" + "update_fields". Prefer indexed fields for filters/sort. For array fields use dot notation (e.g. "transactions.symbol") — when filtering on multiple sub-fields of the same array, list each as a separate filter.
 
 Query: {query}"#
     )

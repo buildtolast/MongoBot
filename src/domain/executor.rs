@@ -181,7 +181,7 @@ pub async fn execute(pool: &MongoPool, query: &ParsedQuery) -> Result<QueryResul
 
 /// Build a single filter condition as a BSON value.
 fn build_single_condition(filter: &Filter) -> Result<Bson, AppError> {
-    let bson_value = json_to_bson(&filter.value)?;
+    let bson_value = coerce_value_for_field(&filter.field, &filter.value)?;
     match filter.operator {
         FilterOperator::Eq => Ok(bson_value),
         FilterOperator::Ne => Ok(Bson::Document(doc! { "$ne": bson_value })),
@@ -278,7 +278,16 @@ pub(crate) fn json_to_bson(value: &serde_json::Value) -> Result<Bson, AppError> 
                 Err(AppError::Validation(format!("Unsupported number: {n}")))
             }
         }
-        serde_json::Value::String(s) => Ok(Bson::String(s.clone())),
+        serde_json::Value::String(s) => {
+            // Detect ISO 8601 date strings and convert to BSON DateTime
+            // Patterns: "2026-01-01T00:00:00Z", "2026-01-01T00:00:00.000Z",
+            //           "2026-01-01", "2026-01-01T00:00:00+00:00"
+            if let Some(dt) = try_parse_datetime(s) {
+                Ok(dt)
+            } else {
+                Ok(Bson::String(s.clone()))
+            }
+        }
         serde_json::Value::Array(arr) => {
             let bson_arr: Result<Vec<Bson>, _> = arr.iter().map(json_to_bson).collect();
             Ok(Bson::Array(bson_arr?))
@@ -511,6 +520,83 @@ pub fn analyze_index_usage(query: &ParsedQuery, schema: Option<&CollectionSchema
 }
 
 /// Escape regex special characters for a literal substring match.
+/// Coerce a JSON value based on the field name.
+/// If the field looks like a date field and the value is a number/short-string year,
+/// convert it to a BSON DateTime.
+fn coerce_value_for_field(field: &str, value: &serde_json::Value) -> Result<Bson, AppError> {
+    let field_lower = field.to_lowercase();
+    let is_date_field = field_lower.contains("date")
+        || field_lower.contains("_at")
+        || field_lower == "released"
+        || field_lower == "timestamp"
+        || field_lower.ends_with("time");
+
+    if is_date_field {
+        // If value is a number that looks like a year (1900-2100), convert to date
+        if let Some(n) = value.as_i64() {
+            if (1900..=2100).contains(&n) {
+                let iso = format!("{n}-01-01T00:00:00Z");
+                if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&iso) {
+                    return Ok(Bson::DateTime(mongodb::bson::DateTime::from_millis(dt.timestamp_millis())));
+                }
+            }
+        }
+        // If value is a string, try date parsing (json_to_bson will handle it)
+    }
+
+    json_to_bson(value)
+}
+
+/// Try to parse a string as an ISO 8601 date and return a BSON DateTime.
+/// Returns None if the string doesn't look like a date.
+fn try_parse_datetime(s: &str) -> Option<Bson> {
+    // Quick check: must start with 4 digits
+    if s.len() < 4 || !s[..4].chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+
+    // Handle bare year string: "2010" → "2010-01-01T00:00:00Z"
+    if s.len() == 4 {
+        let with_full = format!("{s}-01-01T00:00:00Z");
+        if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&with_full) {
+            let ms = dt.timestamp_millis();
+            return Some(Bson::DateTime(mongodb::bson::DateTime::from_millis(ms)));
+        }
+        return None;
+    }
+
+    // Must have dash at position 4 for date formats
+    if s.as_bytes().get(4) != Some(&b'-') {
+        return None;
+    }
+
+    // Try full ISO 8601 with time: "2026-01-01T00:00:00Z" or "2026-01-01T00:00:00.000Z"
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
+        let ms = dt.timestamp_millis();
+        return Some(Bson::DateTime(mongodb::bson::DateTime::from_millis(ms)));
+    }
+
+    // Try "2026-01-01T00:00:00Z" without timezone offset (append Z)
+    if s.contains('T') && !s.ends_with('Z') && !s.contains('+') {
+        let with_z = format!("{s}Z");
+        if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&with_z) {
+            let ms = dt.timestamp_millis();
+            return Some(Bson::DateTime(mongodb::bson::DateTime::from_millis(ms)));
+        }
+    }
+
+    // Try date-only: "2026-01-01" → midnight UTC
+    if s.len() == 10 {
+        let with_time = format!("{s}T00:00:00Z");
+        if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&with_time) {
+            let ms = dt.timestamp_millis();
+            return Some(Bson::DateTime(mongodb::bson::DateTime::from_millis(ms)));
+        }
+    }
+
+    None
+}
+
 fn regex_escape(s: &str) -> String {
     let special = [
         '.', '^', '$', '*', '+', '?', '(', ')', '[', ']', '{', '}', '|', '\\',
