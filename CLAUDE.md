@@ -1,7 +1,7 @@
 # SlackMongoBot — CLAUDE.md
 
 ## Project Overview
-NL-to-MongoDB query bot with Web UI and Slack integration. Actix-web backend with embedded vanilla JS/HTML frontend. Ollama (local LLM) for NL parsing via direct HTTP calls (reqwest). Single binary deployment. Default database: `movies` (14+ collections auto-discovered via runtime introspection). 72 unit tests.
+NL-to-MongoDB query bot with Web UI and Slack integration. Actix-web backend with embedded vanilla JS/HTML frontend. 4 LLM providers: Ollama (default), LM Studio, Anthropic Claude, OpenAI GPT. NL parsing via direct HTTP calls (reqwest). Single binary deployment. Default database: `movies` (14+ collections auto-discovered via runtime introspection). 72 unit tests, 22 source files, 17 frontend files.
 
 ## Build & Run
 ```bash
@@ -38,10 +38,11 @@ build.rs            — assembles frontend into $OUT_DIR/index.html
 - Shared state: `web::Data<AppState>` across actix workers
 - Frontend: `build.rs` assembles shell HTML + CSS + JS into `$OUT_DIR/index.html`, embedded via `include_str!()`
 - Error handling: `thiserror` + sanitized HTTP responses (internal errors logged, safe messages sent to client)
-- LLM: Ollama primary via direct HTTP calls (reqwest), cloud fallback stubs
+- LLM: 4 providers — Ollama (default), LM Studio (OpenAI-compatible), Anthropic Claude, OpenAI GPT. LM Studio and OpenAI share `call_openai_compatible()` implementation
 - Safety: field whitelist from schema, operation whitelist, injection detection
 - Query Advisor: `domain/query_advisor.rs` — 14 validation rules (unbounded, missing index, $ne/$nin, regex, etc.)
-- Preview mode: approval toggle in UI; `POST /api/query` with `preview: true` returns parsed query without executing; `POST /api/execute` confirms
+- Preview mode: approval toggle in UI; `POST /api/query` with `preview: true` returns parsed query without executing; user can edit the parsed JSON before confirming; `POST /api/execute` confirms
+- Settings panel: gear icon opens modal showing all env config with secrets redacted (via `GET /api/config`)
 - Date coercion: `coerce_value_for_field()` and `try_parse_datetime()` in executor — ISO strings and year numbers auto-converted to BSON DateTime
 - `$elemMatch`: array element sub-field filters auto-wrapped in `$elemMatch` by executor
 - Filter merging: multiple conditions on the same field merged into single BSON sub-document (range queries)
@@ -62,14 +63,15 @@ build.rs            — assembles frontend into $OUT_DIR/index.html
 - `dotenvy 0.15` — .env file loading
 - `chrono 0.4` — date parsing and coercion
 - `dashmap 6.1` — lock-free concurrent schema cache
-- No `ollama-rs` — removed in v0.1.1, replaced with direct HTTP
+- No `ollama-rs` — all 4 LLM providers use direct HTTP via reqwest
 
 ## Endpoints
 - `GET /` — embedded frontend
-- `GET /api/health` — health check (MongoDB + Ollama)
-- `GET /api/models` — list available Ollama models
+- `GET /api/health` — health check (MongoDB + LLM)
+- `GET /api/models` — list available models (provider-aware: Ollama tags, OpenAI-compat /v1/models, Anthropic static list)
 - `GET /api/version` — build metadata
-- `POST /api/query` — NL query (supports `preview: true` for approval mode)
+- `GET /api/config` — current configuration with secrets redacted (LLM, MongoDB, server, safety, Slack sections)
+- `POST /api/query` — NL query (supports `preview: true` for approval mode + editable query)
 - `POST /api/execute` — execute a confirmed query (CRUD flow)
 - `GET /api/export` — CSV/JSON file download
 - `GET /api/schemas` — list collection schemas

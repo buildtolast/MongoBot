@@ -292,18 +292,19 @@ tr.expanded-row td {
 
 .example-query {
     padding: 8px 16px;
-    background: var(--bg-secondary);
-    border: 1px solid var(--border);
+    background: var(--accent-bg);
+    border: 1px solid rgba(88, 166, 255, 0.25);
     border-radius: 20px;
-    color: var(--text-secondary);
+    color: var(--accent);
     font-size: 0.85rem;
+    cursor: pointer;
     transition: all var(--transition);
 }
 
 .example-query:hover {
-    background: var(--bg-tertiary);
-    color: var(--accent);
+    background: rgba(88, 166, 255, 0.2);
     border-color: var(--accent);
+    box-shadow: 0 2px 8px rgba(56, 139, 253, 0.2);
 }
 
 /* Confirmation Modal */

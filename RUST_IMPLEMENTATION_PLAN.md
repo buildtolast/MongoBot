@@ -2,13 +2,16 @@
 
 ## Current Status (as of 2026-04-04)
 
-**v0.2.0 — Fully implemented (20+ commits):**
+**v0.2.0 — Fully implemented (25+ commits, 22 source files, 17 frontend files):**
 - Full project scaffold with actix-web 4, build.rs frontend assembly, config, error handling
 - MongoDB client with connection pooling, find/count/distinct/insert/update operations
 - Domain models, runtime schema introspection (14+ collections auto-discovered), safety checker, query executor
-- LLM client with Ollama integration via direct HTTP calls (reqwest), live model selection
+- 4 LLM providers: Ollama (default), LM Studio, Anthropic Claude, OpenAI GPT — all via direct HTTP (reqwest)
+- LM Studio and OpenAI share `call_openai_compatible()` implementation
+- Live model selection (provider-aware: Ollama tags, OpenAI-compat /v1/models, Anthropic static list)
 - Query Advisor with 14 validation rules (unbounded, missing index, $ne/$nin, regex, collection scan, etc.)
 - Preview/approval mode: review parsed queries before execution
+- Editable query: modify parsed JSON before execution in approval mode
 - CRUD support: insert and update with confirmation dialog + backup download
 - Date auto-conversion: ISO strings and year numbers coerced to BSON DateTime
 - `$elemMatch` auto-grouping for array element queries
@@ -16,8 +19,10 @@
 - MongoDB query viewer panel (shell commands)
 - Index analysis (which indexes are used per query)
 - Schema refresh at runtime (POST /api/schemas/refresh)
+- Settings panel: gear icon modal showing all env config with secrets redacted (GET /api/config)
 - Abort button for canceling queries
 - Model selection endpoint (GET /api/models)
+- Configuration endpoint (GET /api/config)
 - Web UI with NL query bar, results table, query inspector, schema browser
 - CSV and JSON export with file download
 - Slack slash command + event handlers
@@ -25,7 +30,7 @@
 - docs/ folder with mongodb_query_reference.md and query_audit_report.md
 
 **Key deviations from original plan:**
-- **No `ollama-rs` crate** — replaced with direct HTTP POST to Ollama `/api/generate` endpoint via reqwest. Simpler dependency, more control over request/response handling
+- **No `ollama-rs` crate** — all 4 LLM providers use direct HTTP via reqwest. Simpler dependency, more control over request/response handling
 - **No `slack-morphism` crate** — Slack integration uses manual HTTP + HMAC-SHA256 verification
 - **No `actix-governor`** — rate limiting not yet implemented
 - **No `regex`** — not needed in current implementation

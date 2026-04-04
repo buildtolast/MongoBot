@@ -2,6 +2,45 @@
    Export Panel
    ============================================= */
 
+#results-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 10px;
+}
+
+.results-stats {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+}
+
+.results-stats span {
+    font-size: 0.8rem;
+}
+
+#result-count {
+    font-weight: 600;
+    color: var(--accent);
+}
+
+#result-time {
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+}
+
+#result-collection {
+    color: var(--success);
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    background: var(--success-bg);
+    padding: 2px 8px;
+    border-radius: 10px;
+}
+
 .export-buttons {
     display: flex;
     gap: 6px;
@@ -12,18 +51,32 @@
     font-size: 0.78rem;
     font-weight: 600;
     font-family: var(--font-mono);
-    background: var(--bg-tertiary);
-    border: 1px solid var(--border);
     border-radius: var(--radius);
-    color: var(--text-secondary);
     transition: all var(--transition);
     text-transform: uppercase;
     letter-spacing: 0.3px;
+    cursor: pointer;
 }
 
-.export-btn:hover {
-    background: var(--accent-bg);
+#export-csv {
+    background: rgba(63, 185, 80, 0.12);
+    border: 1px solid rgba(63, 185, 80, 0.35);
+    color: var(--success);
+}
+
+#export-csv:hover {
+    background: rgba(63, 185, 80, 0.25);
+    border-color: var(--success);
+}
+
+#export-json {
+    background: rgba(88, 166, 255, 0.12);
+    border: 1px solid rgba(88, 166, 255, 0.35);
     color: var(--accent);
+}
+
+#export-json:hover {
+    background: rgba(88, 166, 255, 0.25);
     border-color: var(--accent);
 }
 

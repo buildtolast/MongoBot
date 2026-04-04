@@ -6,7 +6,7 @@
 
 ## System Overview
 
-The Slack-Mongo Query Bot translates natural language questions into MongoDB queries using a local LLM (Ollama). Users interact through **two interfaces**:
+The Slack-Mongo Query Bot translates natural language questions into MongoDB queries using one of 4 LLM providers (Ollama default, LM Studio, Anthropic Claude, OpenAI GPT). Users interact through **two interfaces**:
 
 1. **Web Dashboard** — Browser-based UI with a query bar, results table, and CSV/JSON download buttons
 2. **Slack Bot** — Slash commands (`/mongo`) and app mentions (`@query-bot`)
@@ -35,7 +35,8 @@ Slack:    User types /mongo find active users from last week → bot posts resul
 | Export JSON | `GET /api/export?format=json` | Re-runs query, streams JSON file download |
 | Schemas | `GET /api/schemas` | Lists available collections and fields |
 | Refresh Schemas | `POST /api/schemas/refresh` | Re-introspect MongoDB for new/changed collections |
-| Models | `GET /api/models` | List available Ollama models for live model switching |
+| Models | `GET /api/models` | List available models (provider-aware) |
+| Config | `GET /api/config` | Current configuration with secrets redacted |
 | WebSocket | `WS /ws/live` | Real-time query progress updates |
 
 #### Slack Bot
@@ -63,7 +64,9 @@ App::new()
     // Public
     .route("/",            GET  → frontend::serve_index)
     .route("/api/health",  GET  → health_check)
+    .route("/api/models",  GET  → list_models)
     .route("/api/version", GET  → version)
+    .route("/api/config",  GET  → get_config)
 
     // Slack webhooks (verified by signing secret)
     .route("/api/slack/commands", POST → handle_slash_command)
@@ -117,8 +120,11 @@ Both the Web UI and Slack handlers call into the **same** processing pipeline:
 └──────────┬────────────────┘
            ▼
 ┌─── 2. NLP Parser ────────┐
-│ Ollama (local, default)  │
-│ FormatType::Json mode    │
+│ 4 providers:             │
+│  Ollama (local, default) │
+│  LM Studio (local)       │
+│  Anthropic Claude (cloud)│
+│  OpenAI GPT (cloud)      │
 │ NL → ParsedQuery struct  │
 │ Live model selection     │
 └──────────┬───────────────┘
@@ -140,7 +146,8 @@ Both the Web UI and Slack handlers call into the **same** processing pipeline:
 ┌─── 4. Preview / Execute ─┐
 │ If approval toggle ON:   │
 │   → Return parsed query  │
-│   → User reviews + edits │
+│   → User reviews JSON    │
+│   → User can edit query  │
 │   → POST /api/execute    │
 │ If toggle OFF:           │
 │   → Execute immediately  │
@@ -198,20 +205,26 @@ fields:
     description: Average rating (0-10)
 ```
 
-#### Step 2: NLP Parsing (Ollama LLM)
+#### Step 2: NLP Parsing (4 LLM Providers)
 
-The natural language query is sent to Ollama via **direct HTTP calls** (using reqwest) along with schema context. The LLM returns a structured `ParsedQuery` JSON object. The `format: "json"` parameter in the Ollama `/api/generate` request constrains output to valid JSON.
+The natural language query is sent to the configured LLM provider via **direct HTTP calls** (using reqwest) along with schema context. The LLM returns a structured `ParsedQuery` JSON object.
 
-**Note:** The project previously used the `ollama-rs` crate but switched to direct HTTP calls via reqwest for simpler dependency management and more control over request/response handling.
+**Providers:**
+- **Ollama** (default) -- `/api/generate` with `format: "json"` enforced. Local, free, no internet required.
+- **LM Studio** -- OpenAI-compatible API at `/v1/chat/completions`. Local, free, runs at `localhost:1234`.
+- **Anthropic Claude** -- `/v1/messages` with `x-api-key` header. Cloud, requires `CLOUD_LLM_API_KEY`.
+- **OpenAI GPT** -- `/v1/chat/completions` with Bearer auth. Cloud, requires `CLOUD_LLM_API_KEY`.
+
+LM Studio and OpenAI share a `call_openai_compatible()` implementation that handles the OpenAI chat completions format with `response_format: { "type": "json_object" }`.
 
 **Why Ollama is the default:**
-| Factor | Ollama (Local) | Cloud (Anthropic/OpenAI) |
-|--------|---------------|-------------------------|
-| Cost | Free | $0.25-15 per 1M tokens |
-| Latency | ~200-500ms | ~500-2000ms |
-| Privacy | Data stays local | Data sent to third party |
-| Availability | No internet needed | Requires internet + API key |
-| JSON reliability | `format: "json"` enforced | Prompt-based (less reliable) |
+| Factor | Ollama (Local) | LM Studio (Local) | Cloud (Anthropic/OpenAI) |
+|--------|---------------|-------------------|-------------------------|
+| Cost | Free | Free | $0.25-15 per 1M tokens |
+| Latency | ~200-500ms | ~200-500ms | ~500-2000ms |
+| Privacy | Data stays local | Data stays local | Data sent to third party |
+| Availability | No internet needed | No internet needed | Requires internet + API key |
+| JSON reliability | `format: "json"` enforced | `response_format` enforced | Prompt-based (less reliable) |
 
 **Default model:** `qwen3-coder:30b` — reliable JSON schema compliance for MongoDB query generation.
 
@@ -324,14 +337,15 @@ src/frontend/
 | Feature | Description |
 |---------|-------------|
 | NL Query Bar | Text input + submit button, shows loading spinner during LLM parsing |
-| Approval Toggle | Preview parsed queries before execution; review and confirm |
+| Approval Toggle | Preview parsed queries before execution; review, edit JSON, and confirm |
 | Abort Button | Cancel in-progress queries |
 | Results Table | Paginated table with sortable columns, auto-detected from document fields |
 | Query Inspector | Collapsible panel showing the `ParsedQuery` JSON the LLM generated |
 | MongoDB Query Viewer | Panel showing actual shell commands (`db.collection.find(...)`) |
 | Index Analysis | Shows which indexes are used per query |
 | Query Advisor | 14-rule analysis with warnings and optimization hints |
-| Model Selector | Switch Ollama models at runtime without restart |
+| Model Selector | Switch LLM models at runtime without restart (provider-aware) |
+| Settings Panel | Gear icon opens modal showing all config with secrets redacted (`GET /api/config`) |
 | CSV Download | Button triggers file download via `/api/export?format=csv` |
 | JSON Download | Button triggers file download via `/api/export?format=json` |
 | CRUD Confirmation | Insert/update operations show confirmation dialog + backup download |
@@ -387,17 +401,21 @@ User                    Slack                    Server
 ## External Dependencies
 
 ```
-┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│     Ollama      │     │     MongoDB      │     │  Slack API      │
-│  localhost:11434│     │  localhost:27017  │     │  api.slack.com  │
-│                 │     │                  │     │                 │
-│  qwen3-coder    │     │  App database    │     │  (optional)     │
-│  JSON mode      │     │  Read + write    │     │  Webhooks in    │
-│  ~200-500ms     │     │  Pool: 2-20 conn │     │  Results out    │
-│                 │     │                  │     │                 │
-│  PRIMARY        │     │  REQUIRED        │     │  OPTIONAL       │
-│  No API costs   │     │                  │     │                 │
-└─────────────────┘     └──────────────────┘     └─────────────────┘
+┌─────────────────┐  ┌─────────────────┐  ┌──────────────────┐  ┌─────────────────┐
+│     Ollama      │  │   LM Studio     │  │     MongoDB      │  │  Slack API      │
+│  localhost:11434│  │  localhost:1234  │  │  localhost:27017  │  │  api.slack.com  │
+│                 │  │                 │  │                  │  │                 │
+│  qwen3-coder    │  │  OpenAI-compat  │  │  App database    │  │  (optional)     │
+│  JSON mode      │  │  chat/completns │  │  Read + write    │  │  Webhooks in    │
+│  ~200-500ms     │  │  ~200-500ms     │  │  Pool: 2-20 conn │  │  Results out    │
+│                 │  │                 │  │                  │  │                 │
+│  DEFAULT        │  │  ALTERNATIVE    │  │  REQUIRED        │  │  OPTIONAL       │
+│  No API costs   │  │  No API costs   │  │                  │  │                 │
+└─────────────────┘  └─────────────────┘  └──────────────────┘  └─────────────────┘
+
+Cloud providers (one of, requires CLOUD_LLM_API_KEY):
+  Anthropic Claude — api.anthropic.com (or ANTHROPIC_API_URL)
+  OpenAI GPT       — api.openai.com (or OPENAI_API_URL)
 ```
 
 ---
@@ -415,7 +433,7 @@ src/
 ├── infra/                 → External service clients
 │   ├── mongo.rs           → MongoPool: connect, find, count, distinct
 │   ├── slack.rs           → Slack API helpers (file upload, message post)
-│   └── llm.rs             → LlmClient: Ollama via direct HTTP (reqwest), cloud fallback
+│   └── llm.rs             → LlmClient: 4 providers (Ollama, LM Studio, Anthropic, OpenAI) via direct HTTP
 │
 ├── domain/                → Business logic (no framework dependencies)
 │   ├── models.rs          → ParsedQuery, Filter, QueryRequest/Response, ExportFormat, IndexInfo
@@ -432,7 +450,7 @@ src/
 │   ├── slack_commands.rs  → Slack slash command + event handlers
 │   ├── slack_actions.rs   → Interactive component callbacks
 │   ├── ws.rs              → WebSocket /ws/live
-│   └── health.rs          → GET /api/health + GET /api/models + GET /api/version
+│   └── health.rs          → GET /api/health + GET /api/models + GET /api/version + GET /api/config
 │
 ├── middleware/
 │   ├── auth.rs            → Bearer token (constant-time via subtle)
