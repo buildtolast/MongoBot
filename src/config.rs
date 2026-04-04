@@ -8,6 +8,8 @@ pub enum LlmProvider {
     Ollama,
     Anthropic,
     OpenAI,
+    #[value(alias = "lmstudio")]
+    LmStudio,
 }
 
 impl Default for LlmProvider {
@@ -22,6 +24,7 @@ impl fmt::Display for LlmProvider {
             Self::Ollama => write!(f, "ollama"),
             Self::Anthropic => write!(f, "anthropic"),
             Self::OpenAI => write!(f, "openai"),
+            Self::LmStudio => write!(f, "lmstudio"),
         }
     }
 }
@@ -58,6 +61,14 @@ pub struct AppConfig {
     #[arg(long, env = "OLLAMA_MODEL", default_value = "qwen3-coder:30b")]
     pub ollama_model: String,
 
+    /// LM Studio server URL (OpenAI-compatible API)
+    #[arg(long, env = "LMSTUDIO_URL", default_value = "http://localhost:1234")]
+    pub lmstudio_url: String,
+
+    /// LM Studio model name
+    #[arg(long, env = "LMSTUDIO_MODEL")]
+    pub lmstudio_model: Option<String>,
+
     /// API key for cloud LLM providers (Anthropic/OpenAI)
     #[arg(long, env = "CLOUD_LLM_API_KEY")]
     pub cloud_llm_api_key: Option<String>,
@@ -65,6 +76,14 @@ pub struct AppConfig {
     /// Model name for cloud LLM providers
     #[arg(long, env = "CLOUD_LLM_MODEL")]
     pub cloud_llm_model: Option<String>,
+
+    /// Anthropic API URL (override for proxies)
+    #[arg(long, env = "ANTHROPIC_API_URL", default_value = "https://api.anthropic.com")]
+    pub anthropic_api_url: String,
+
+    /// OpenAI API URL (override for proxies or Azure)
+    #[arg(long, env = "OPENAI_API_URL", default_value = "https://api.openai.com")]
+    pub openai_api_url: String,
 
     /// Maximum result rows returned per query
     #[arg(long, env = "MAX_RESULT_ROWS", default_value = "10000")]
@@ -108,8 +127,12 @@ impl fmt::Debug for AppConfig {
             .field("llm_provider", &self.llm_provider)
             .field("ollama_url", &self.ollama_url)
             .field("ollama_model", &self.ollama_model)
+            .field("lmstudio_url", &self.lmstudio_url)
+            .field("lmstudio_model", &self.lmstudio_model)
             .field("cloud_llm_api_key", &redact_option(&self.cloud_llm_api_key))
             .field("cloud_llm_model", &self.cloud_llm_model)
+            .field("anthropic_api_url", &self.anthropic_api_url)
+            .field("openai_api_url", &self.openai_api_url)
             .field("max_result_rows", &self.max_result_rows)
             .field("allowed_operations", &self.allowed_operations)
             .field("host", &self.host)
@@ -140,8 +163,12 @@ mod tests {
             llm_provider: LlmProvider::Ollama,
             ollama_url: "http://localhost:11434".into(),
             ollama_model: "qwen3-coder:30b".into(),
+            lmstudio_url: "http://localhost:1234".into(),
+            lmstudio_model: None,
             cloud_llm_api_key: Some("sk-secret".into()),
             cloud_llm_model: None,
+            anthropic_api_url: "https://api.anthropic.com".into(),
+            openai_api_url: "https://api.openai.com".into(),
             max_result_rows: 10000,
             allowed_operations: vec!["find".into()],
             host: "0.0.0.0".into(),
