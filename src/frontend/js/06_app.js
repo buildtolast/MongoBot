@@ -14,10 +14,22 @@
         loadHistory();
         renderHistory(AppState.queryHistory);
 
+        // Load theme
+        var savedTheme = localStorage.getItem('mqb_theme') || 'dark';
+        document.documentElement.setAttribute('data-theme', savedTheme);
+        document.getElementById('theme-select').value = savedTheme;
+
+        // Theme selector
+        document.getElementById('theme-select').addEventListener('change', function() {
+            var theme = this.value;
+            document.documentElement.setAttribute('data-theme', theme);
+            localStorage.setItem('mqb_theme', theme);
+        });
+
         // Set version badge
         var versionBadge = document.getElementById('version-badge');
         if (versionBadge) {
-            versionBadge.textContent = 'v0.1.0';
+            versionBadge.textContent = 'v0.3.0';
         }
 
         // Load schemas

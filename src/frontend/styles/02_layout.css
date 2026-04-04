@@ -129,6 +129,25 @@
     border-color: var(--border);
 }
 
+.theme-select {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 3px 8px;
+    color: var(--text-secondary);
+    font-size: 0.7rem;
+    font-family: var(--font-mono);
+    outline: none;
+    cursor: pointer;
+    transition: border-color var(--transition);
+}
+
+.theme-select:hover,
+.theme-select:focus {
+    border-color: var(--accent);
+    color: var(--text-primary);
+}
+
 #settings-btn {
     font-size: 1.3rem;
     color: var(--text-muted);
