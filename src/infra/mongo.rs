@@ -271,17 +271,31 @@ fn collect_field_types(
 
         let type_name = bson_type_name(value);
 
-        if let Bson::Document(inner) = value {
-            if inner.contains_key("$oid")
-                || inner.contains_key("$date")
-                || inner.contains_key("$numberLong")
-            {
-                types.insert(full_key, type_name);
-            } else {
-                collect_field_types(inner, &full_key, types);
+        match value {
+            Bson::Document(inner) => {
+                if inner.contains_key("$oid")
+                    || inner.contains_key("$date")
+                    || inner.contains_key("$numberLong")
+                {
+                    types.insert(full_key, type_name);
+                } else {
+                    collect_field_types(inner, &full_key, types);
+                }
             }
-        } else {
-            types.entry(full_key).or_insert(type_name);
+            Bson::Array(arr) => {
+                // Record the array field itself
+                types.insert(full_key.clone(), "array".to_string());
+                // Dive into the first element to discover inner fields
+                // This enables dot-notation queries like "transactions.symbol"
+                if let Some(first) = arr.first() {
+                    if let Bson::Document(inner_doc) = first {
+                        collect_field_types(inner_doc, &full_key, types);
+                    }
+                }
+            }
+            _ => {
+                types.entry(full_key).or_insert(type_name);
+            }
         }
     }
 }
