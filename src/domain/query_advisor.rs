@@ -58,8 +58,50 @@ pub fn analyze_query(
     check_multiple_array_filters(query, &mut advice);
     check_write_safety(query, &mut advice);
     check_distinct_without_index(query, schema, &mut advice);
+    check_large_in_array(query, &mut advice);
+    check_same_field_range(query, &mut advice);
 
     advice
+}
+
+/// Warn if $in operator has more than 200 values (performance degrades).
+fn check_large_in_array(query: &ParsedQuery, advice: &mut Vec<QueryAdvice>) {
+    for filter in &query.filters {
+        if filter.operator == FilterOperator::In || filter.operator == FilterOperator::Nin {
+            if let Some(arr) = filter.value.as_array() {
+                if arr.len() > 200 {
+                    advice.push(QueryAdvice {
+                        severity: "warning".into(),
+                        code: "LARGE_IN_ARRAY".into(),
+                        message: format!(
+                            "$in on '{}' has {} values. Large arrays in $in degrade performance — consider restructuring the query or using a lookup collection.",
+                            filter.field, arr.len()
+                        ),
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// Info when multiple filters target the same field (range query).
+fn check_same_field_range(query: &ParsedQuery, advice: &mut Vec<QueryAdvice>) {
+    let mut field_counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for f in &query.filters {
+        *field_counts.entry(&f.field).or_default() += 1;
+    }
+    for (field, count) in field_counts {
+        if count > 1 {
+            advice.push(QueryAdvice {
+                severity: "info".into(),
+                code: "RANGE_QUERY".into(),
+                message: format!(
+                    "Multiple conditions on '{}' detected — this creates a range query. Ensure an index exists on this field for optimal performance.",
+                    field
+                ),
+            });
+        }
+    }
 }
 
 /// Warn if a find/aggregate has no filters and no limit (or limit > 1000).

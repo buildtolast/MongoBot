@@ -234,10 +234,56 @@ pub(crate) fn build_filter(filters: &[Filter]) -> Result<Document, AppError> {
 
     let mut doc = Document::new();
 
-    // Add top-level filters directly
+    // Group top-level filters by field name to handle same-field ranges
+    // e.g. price > 10 AND price < 100 → { price: { $gt: 10, $lt: 100 } }
+    let mut field_groups: std::collections::BTreeMap<String, Vec<&Filter>> = std::collections::BTreeMap::new();
     for filter in &top_level {
-        let condition = build_single_condition(filter)?;
-        doc.insert(filter.field.clone(), condition);
+        field_groups.entry(filter.field.clone()).or_default().push(filter);
+    }
+
+    for (field, group) in &field_groups {
+        if group.len() == 1 {
+            let condition = build_single_condition(group[0])?;
+            doc.insert(field.clone(), condition);
+        } else {
+            // Multiple conditions on same field — merge into single sub-document
+            // e.g. { $gt: 10, $lt: 100 } for range queries
+            let mut merged = Document::new();
+            let mut has_eq = false;
+            for filter in group {
+                let condition = build_single_condition(filter)?;
+                match condition {
+                    Bson::Document(sub) => {
+                        for (k, v) in sub {
+                            merged.insert(k, v);
+                        }
+                    }
+                    _ => {
+                        // Eq condition — can't merge with operators, use $and
+                        has_eq = true;
+                        break;
+                    }
+                }
+            }
+            if has_eq || merged.is_empty() {
+                // Fall back to $and for eq + operator combos
+                let mut and_clauses: Vec<Bson> = Vec::new();
+                for filter in group {
+                    let condition = build_single_condition(filter)?;
+                    and_clauses.push(Bson::Document(doc! { field.clone(): condition }));
+                }
+                // Add to existing $and or create new one
+                if let Some(existing_and) = doc.get_mut("$and") {
+                    if let Bson::Array(arr) = existing_and {
+                        arr.extend(and_clauses);
+                    }
+                } else {
+                    doc.insert("$and".to_string(), Bson::Array(and_clauses));
+                }
+            } else {
+                doc.insert(field.clone(), Bson::Document(merged));
+            }
+        }
     }
 
     // For array groups: if only 1 filter, use simple dot notation.

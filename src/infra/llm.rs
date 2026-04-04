@@ -140,8 +140,8 @@ Collections:
 JSON format (REQUIRED fields: collection, operation, filters, limit):
 {{
   "collection": "name",
-  "operation": "find|count|distinct|insert|update",
-  "filters": [{{"field":"name","operator":"eq|ne|gt|gte|lt|lte|in|contains","value":"x"}}],
+  "operation": "find|count|distinct|aggregate|insert|update",
+  "filters": [{{"field":"name","operator":"eq|ne|gt|gte|lt|lte|in|nin|contains|regex","value":"x"}}],
   "projection": [],
   "sort": {{"field":"name","order":1}},
   "limit": 100,
