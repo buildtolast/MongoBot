@@ -207,6 +207,25 @@ function renderTable(documents) {
     renderPagination(total, AppState.currentPage, AppState.pageSize);
 }
 
+function formatBsonDate(dateVal) {
+    // Handle {"$numberLong": "946684800000"} or raw milliseconds number or ISO string
+    var ms;
+    if (typeof dateVal === 'object' && dateVal !== null && dateVal.$numberLong) {
+        ms = parseInt(dateVal.$numberLong, 10);
+    } else if (typeof dateVal === 'number') {
+        ms = dateVal;
+    } else if (typeof dateVal === 'string') {
+        // Could be ISO string or milliseconds string
+        var parsed = Date.parse(dateVal);
+        if (!isNaN(parsed)) return new Date(parsed).toISOString().replace('T', ' ').replace('.000Z', ' UTC');
+        ms = parseInt(dateVal, 10);
+    } else {
+        return String(dateVal);
+    }
+    if (isNaN(ms)) return String(dateVal);
+    return new Date(ms).toISOString().replace('T', ' ').replace('.000Z', ' UTC');
+}
+
 function flattenDocument(doc) {
     var flat = {};
     function recurse(obj, prefix) {
@@ -216,7 +235,7 @@ function flattenDocument(doc) {
         }
         // Handle special MongoDB types
         if (obj.$oid) { flat[prefix] = obj.$oid; return; }
-        if (obj.$date) { flat[prefix] = obj.$date; return; }
+        if (obj.$date) { flat[prefix] = formatBsonDate(obj.$date); return; }
         if (obj.$numberLong) { flat[prefix] = Number(obj.$numberLong); return; }
         if (obj.$numberInt) { flat[prefix] = Number(obj.$numberInt); return; }
         if (obj.$numberDouble) { flat[prefix] = Number(obj.$numberDouble); return; }
