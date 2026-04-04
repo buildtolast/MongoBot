@@ -179,50 +179,86 @@ pub async fn execute(pool: &MongoPool, query: &ParsedQuery) -> Result<QueryResul
     }
 }
 
+/// Build a single filter condition as a BSON value.
+fn build_single_condition(filter: &Filter) -> Result<Bson, AppError> {
+    let bson_value = json_to_bson(&filter.value)?;
+    match filter.operator {
+        FilterOperator::Eq => Ok(bson_value),
+        FilterOperator::Ne => Ok(Bson::Document(doc! { "$ne": bson_value })),
+        FilterOperator::Gt => Ok(Bson::Document(doc! { "$gt": bson_value })),
+        FilterOperator::Gte => Ok(Bson::Document(doc! { "$gte": bson_value })),
+        FilterOperator::Lt => Ok(Bson::Document(doc! { "$lt": bson_value })),
+        FilterOperator::Lte => Ok(Bson::Document(doc! { "$lte": bson_value })),
+        FilterOperator::In => {
+            let arr = to_bson_array(&filter.value)?;
+            Ok(Bson::Document(doc! { "$in": arr }))
+        }
+        FilterOperator::Nin => {
+            let arr = to_bson_array(&filter.value)?;
+            Ok(Bson::Document(doc! { "$nin": arr }))
+        }
+        FilterOperator::Contains => {
+            let pattern = filter.value.as_str().ok_or_else(|| {
+                AppError::Validation("Contains operator requires a string value".into())
+            })?;
+            Ok(Bson::Document(doc! { "$regex": regex_escape(pattern), "$options": "i" }))
+        }
+        FilterOperator::Regex => {
+            let pattern = filter.value.as_str().ok_or_else(|| {
+                AppError::Validation("Regex operator requires a string value".into())
+            })?;
+            Ok(Bson::Document(doc! { "$regex": pattern, "$options": "i" }))
+        }
+    }
+}
+
 /// Build a BSON filter document from a list of Filter conditions.
+/// When multiple filters target fields inside the same array (e.g. transactions.symbol
+/// and transactions.amount), they are automatically grouped under $elemMatch so MongoDB
+/// matches on the SAME array element.
 pub(crate) fn build_filter(filters: &[Filter]) -> Result<Document, AppError> {
-    let mut doc = Document::new();
+    // Group filters by their array prefix.
+    // e.g. "transactions.symbol" and "transactions.amount" share prefix "transactions"
+    // while "name" and "year" have no prefix (top-level).
+    let mut array_groups: std::collections::BTreeMap<String, Vec<&Filter>> = std::collections::BTreeMap::new();
+    let mut top_level: Vec<&Filter> = Vec::new();
 
     for filter in filters {
-        let bson_value = json_to_bson(&filter.value)?;
+        if let Some(dot_pos) = filter.field.find('.') {
+            let prefix = &filter.field[..dot_pos];
+            array_groups.entry(prefix.to_string()).or_default().push(filter);
+        } else {
+            top_level.push(filter);
+        }
+    }
 
-        let condition = match filter.operator {
-            FilterOperator::Eq => bson_value,
-            FilterOperator::Ne => Bson::Document(doc! { "$ne": bson_value }),
-            FilterOperator::Gt => Bson::Document(doc! { "$gt": bson_value }),
-            FilterOperator::Gte => Bson::Document(doc! { "$gte": bson_value }),
-            FilterOperator::Lt => Bson::Document(doc! { "$lt": bson_value }),
-            FilterOperator::Lte => Bson::Document(doc! { "$lte": bson_value }),
-            FilterOperator::In => {
-                let arr = to_bson_array(&filter.value)?;
-                Bson::Document(doc! { "$in": arr })
-            }
-            FilterOperator::Nin => {
-                let arr = to_bson_array(&filter.value)?;
-                Bson::Document(doc! { "$nin": arr })
-            }
-            FilterOperator::Contains => {
-                let pattern = filter
-                    .value
-                    .as_str()
-                    .ok_or_else(|| {
-                        AppError::Validation("Contains operator requires a string value".into())
-                    })?;
-                let escaped = regex_escape(pattern);
-                Bson::Document(doc! { "$regex": escaped, "$options": "i" })
-            }
-            FilterOperator::Regex => {
-                let pattern = filter
-                    .value
-                    .as_str()
-                    .ok_or_else(|| {
-                        AppError::Validation("Regex operator requires a string value".into())
-                    })?;
-                Bson::Document(doc! { "$regex": pattern, "$options": "i" })
-            }
-        };
+    let mut doc = Document::new();
 
+    // Add top-level filters directly
+    for filter in &top_level {
+        let condition = build_single_condition(filter)?;
         doc.insert(filter.field.clone(), condition);
+    }
+
+    // For array groups: if only 1 filter, use simple dot notation.
+    // If 2+ filters on same array prefix, wrap in $elemMatch.
+    for (prefix, group_filters) in &array_groups {
+        if group_filters.len() == 1 {
+            // Single filter — simple dot notation works fine
+            let filter = group_filters[0];
+            let condition = build_single_condition(filter)?;
+            doc.insert(filter.field.clone(), condition);
+        } else {
+            // Multiple filters on same array — use $elemMatch
+            let mut elem_match = Document::new();
+            for filter in group_filters {
+                // Strip the array prefix: "transactions.symbol" → "symbol"
+                let inner_field = &filter.field[prefix.len() + 1..];
+                let condition = build_single_condition(filter)?;
+                elem_match.insert(inner_field.to_string(), condition);
+            }
+            doc.insert(prefix.clone(), doc! { "$elemMatch": elem_match });
+        }
     }
 
     Ok(doc)
