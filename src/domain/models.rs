@@ -216,6 +216,10 @@ pub struct QueryRequest {
     /// Optional model override (e.g. "qwen2.5-coder:7b"). Uses default if omitted.
     #[serde(default)]
     pub model: Option<String>,
+
+    /// If true, only parse and validate — don't execute the query.
+    #[serde(default)]
+    pub preview: bool,
 }
 
 /// Query response returned to the client.
@@ -239,6 +243,10 @@ pub struct QueryResponse {
     /// Index usage analysis.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub index_analysis: Option<IndexAnalysis>,
+
+    /// Query advice: warnings, suggestions, best practice tips.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub advice: Vec<crate::domain::query_advisor::QueryAdvice>,
 
     /// Whether this is a write operation requiring confirmation.
     #[serde(default)]

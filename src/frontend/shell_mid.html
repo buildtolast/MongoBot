@@ -38,6 +38,11 @@
         </div>
         <div class="query-options">
           <label>Model: <select id="model-select"><option>default</option></select></label>
+          <label class="toggle-label">
+            <input type="checkbox" id="approve-toggle" />
+            <span class="toggle-slider"></span>
+            Approve queries
+          </label>
         </div>
       </form>
     </section>
@@ -61,6 +66,13 @@
         <div id="query-inspector" class="collapsible">
           <button class="collapsible-toggle">Parsed JSON &#9656;</button>
           <pre id="parsed-query-json" class="code-block" hidden></pre>
+        </div>
+      </div>
+      <div id="approval-bar" class="approval-bar" hidden>
+        <span class="approval-label">Review the query above before execution</span>
+        <div class="approval-actions">
+          <button id="reject-btn" class="modal-btn modal-btn-cancel">Reject</button>
+          <button id="approve-btn" class="modal-btn approve-btn">Approve &amp; Execute</button>
         </div>
       </div>
       <div id="results-table-container">

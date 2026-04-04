@@ -44,6 +44,39 @@ async function queryApi(queryText, model) {
     }
 }
 
+async function previewQuery(queryText, model) {
+    if (currentAbortController) {
+        currentAbortController.abort();
+    }
+    currentAbortController = new AbortController();
+
+    var body = { query: queryText, preview: true };
+    if (model && model !== 'default') {
+        body.model = model;
+    }
+    try {
+        var resp = await fetch(API_BASE + '/api/query', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+            signal: currentAbortController.signal
+        });
+        currentAbortController = null;
+        if (!resp.ok) {
+            var errBody = await resp.text();
+            var errMsg;
+            try { errMsg = JSON.parse(errBody).error || errBody; } catch(_) { errMsg = errBody || ('HTTP ' + resp.status); }
+            throw new Error(errMsg);
+        }
+        return await resp.json();
+    } catch (err) {
+        currentAbortController = null;
+        if (err.name === 'AbortError') throw err;
+        showError(err.message || 'Preview failed');
+        throw err;
+    }
+}
+
 function abortCurrentQuery() {
     if (currentAbortController) {
         currentAbortController.abort();

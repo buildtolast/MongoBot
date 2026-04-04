@@ -56,6 +56,15 @@ function renderResults(response) {
             }
         }
 
+        // Append query advice
+        if (response.advice && response.advice.length > 0) {
+            queryText += '\n\n/* Query Advice */';
+            response.advice.forEach(function(a) {
+                var icon = a.severity === 'error' ? 'ERROR' : a.severity === 'warning' ? 'WARN' : 'INFO';
+                queryText += '\n// [' + icon + '] ' + a.message;
+            });
+        }
+
         mongoEl.textContent = queryText;
         mongoEl.hidden = false;
         var mongoToggle = document.querySelector('.mongo-toggle');

@@ -17,7 +17,9 @@ var AppState = {
     loading: false,
     sortColumn: null,
     sortDirection: 'asc',
-    pendingWrite: null
+    pendingWrite: null,
+    approveMode: false,
+    pendingApproval: null
 };
 
 var HISTORY_KEY = 'mqb_query_history';

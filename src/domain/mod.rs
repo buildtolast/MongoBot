@@ -3,3 +3,4 @@ pub mod parser;
 pub mod executor;
 pub mod safety;
 pub mod export;
+pub mod query_advisor;

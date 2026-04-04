@@ -96,7 +96,16 @@
             AppState.currentQuery = queryText;
             showLoading(true);
 
-            queryApi(queryText, model).then(function(response) {
+            // If approve mode is on, preview first instead of executing
+            var queryFn = AppState.approveMode ? previewQuery : queryApi;
+
+            queryFn(queryText, model).then(function(response) {
+                // If approve mode is on AND this is a read query, show approval panel
+                if (AppState.approveMode && !response.requires_confirmation) {
+                    showLoading(false);
+                    showApprovalPanel(response);
+                    return;
+                }
                 if (response.requires_confirmation) {
                     showLoading(false);
                     showConfirmModal(response);
@@ -168,6 +177,15 @@
                 document.getElementById('query-input').select();
             }
         });
+
+        // Approve mode toggle
+        document.getElementById('approve-toggle').addEventListener('change', function() {
+            AppState.approveMode = this.checked;
+        });
+
+        // Approval buttons
+        document.getElementById('approve-btn').addEventListener('click', executeApproved);
+        document.getElementById('reject-btn').addEventListener('click', rejectQuery);
 
         // Confirmation modal handlers
         document.getElementById('confirm-close').addEventListener('click', hideConfirmModal);
@@ -329,6 +347,114 @@
     function hideConfirmModal() {
         document.getElementById('confirm-modal').hidden = true;
         AppState.pendingWrite = null;
+    }
+
+    // --- Query Approval Panel ---
+
+    function showApprovalPanel(response) {
+        AppState.pendingApproval = response;
+        var section = document.getElementById('results-section');
+        var emptyState = document.getElementById('empty-state');
+        emptyState.style.display = 'none';
+        section.hidden = false;
+
+        // Show mongo query
+        var mongoEl = document.getElementById('mongo-query-cmd');
+        var queryText = response.mongo_query || '';
+        if (response.index_analysis) {
+            var ia = response.index_analysis;
+            queryText += '\n\n/* Index Analysis */';
+            if (ia.index_used) {
+                queryText += '\n// Using index: ' + ia.matching_index;
+            } else {
+                queryText += '\n// WARNING: No matching index — collection scan required';
+            }
+            if (ia.unindexed_fields && ia.unindexed_fields.length > 0) {
+                queryText += '\n// Unindexed fields: ' + ia.unindexed_fields.join(', ');
+            }
+            if (ia.suggestions && ia.suggestions.length > 0) {
+                ia.suggestions.forEach(function(s) {
+                    queryText += '\n// Suggestion: ' + s;
+                });
+            }
+        }
+        mongoEl.textContent = queryText;
+        mongoEl.hidden = false;
+        var mongoToggle = document.querySelector('.mongo-toggle');
+        if (mongoToggle) {
+            mongoToggle.classList.add('open');
+            mongoToggle.innerHTML = 'MongoDB Query &#9662;';
+            if (response.index_analysis && !response.index_analysis.index_used) {
+                mongoToggle.classList.add('index-warning');
+            } else {
+                mongoToggle.classList.remove('index-warning');
+            }
+        }
+
+        // Show parsed query
+        var parsedEl = document.getElementById('parsed-query-json');
+        parsedEl.textContent = JSON.stringify(response.parsed, null, 2);
+        parsedEl.hidden = false;
+        var parsedToggle = document.querySelector('#query-inspector .collapsible-toggle');
+        if (parsedToggle) {
+            parsedToggle.classList.add('open');
+            parsedToggle.innerHTML = 'Parsed JSON &#9662;';
+        }
+
+        // Clear table area
+        var thead = document.getElementById('results-thead');
+        var tbody = document.getElementById('results-tbody');
+        thead.innerHTML = '';
+        tbody.innerHTML = '';
+        document.getElementById('pagination').innerHTML = '';
+
+        // Stats
+        document.getElementById('result-count').textContent = 'Pending approval';
+        document.getElementById('result-time').textContent = response.execution_ms + 'ms (parse only)';
+        document.getElementById('result-collection').textContent = response.parsed ? response.parsed.collection : '';
+
+        // Show approval buttons
+        showApprovalButtons(true);
+    }
+
+    function showApprovalButtons(show) {
+        var container = document.getElementById('approval-bar');
+        if (!container) return;
+        container.hidden = !show;
+    }
+
+    function executeApproved() {
+        var response = AppState.pendingApproval;
+        if (!response) return;
+        AppState.pendingApproval = null;
+        showApprovalButtons(false);
+        showLoading(true);
+
+        var model = document.getElementById('model-select').value;
+        queryApi(AppState.currentQuery, model).then(function(result) {
+            showLoading(false);
+            if (result.requires_confirmation) {
+                showConfirmModal(result);
+                return;
+            }
+            renderResults(result);
+            addToHistory(
+                AppState.currentQuery,
+                result.parsed ? result.parsed.collection : '',
+                result.count || 0,
+                result.execution_ms
+            );
+            renderHistory(AppState.queryHistory);
+        }).catch(function() {
+            showLoading(false);
+        });
+    }
+
+    function rejectQuery() {
+        AppState.pendingApproval = null;
+        showApprovalButtons(false);
+        document.getElementById('results-section').hidden = true;
+        document.getElementById('empty-state').style.display = '';
     }
 
     // --- Overlay for mobile sidebar ---

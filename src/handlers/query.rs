@@ -3,6 +3,7 @@ use std::time::Instant;
 
 use crate::domain::executor;
 use crate::domain::models::{ConfirmRequest, QueryRequest, QueryResponse};
+use crate::domain::query_advisor;
 use crate::error::AppError;
 use crate::state::AppState;
 
@@ -35,6 +36,25 @@ pub async fn handle_query(
     let schema = state.get_schema(&parsed.collection);
     state.safety.validate(&parsed, schema.as_ref())?;
 
+    // 4a. Preview mode: return parsed query without executing
+    if body.preview {
+        let mongo_query = executor::build_mongo_shell_command(&parsed);
+        let execution_ms = start.elapsed().as_millis() as u64;
+        let index_analysis = Some(executor::analyze_index_usage(&parsed, schema.as_ref()));
+        let advice = query_advisor::analyze_query(&parsed, schema.as_ref());
+        return Ok(HttpResponse::Ok().json(QueryResponse {
+            parsed,
+            results: serde_json::json!(null),
+            count: 0,
+            execution_ms,
+            mongo_query,
+            index_analysis,
+            advice,
+            requires_confirmation: false,
+            affected_count: None,
+        }));
+    }
+
     // 4. For write operations, return a confirmation request instead of executing.
     //    For update/delete: preview affected documents so user can backup first.
     if parsed.operation.is_write() {
@@ -66,6 +86,7 @@ pub async fn handle_query(
 
         let execution_ms = start.elapsed().as_millis() as u64;
 
+        let advice = query_advisor::analyze_query(&parsed, schema.as_ref());
         let response = QueryResponse {
             parsed,
             results: preview_results,
@@ -73,6 +94,7 @@ pub async fn handle_query(
             execution_ms,
             mongo_query,
             index_analysis: None,
+            advice,
             requires_confirmation: true,
             affected_count: Some(preview_count as u64),
         };
@@ -90,6 +112,7 @@ pub async fn handle_query(
     let mongo_query = executor::build_mongo_shell_command(&parsed);
     let index_analysis = Some(executor::analyze_index_usage(&parsed, schema.as_ref()));
 
+    let advice = query_advisor::analyze_query(&parsed, schema.as_ref());
     let response = QueryResponse {
         parsed,
         results: results_json,
@@ -97,6 +120,7 @@ pub async fn handle_query(
         execution_ms,
         mongo_query,
         index_analysis,
+        advice,
         requires_confirmation: false,
         affected_count: None,
     };
@@ -149,6 +173,7 @@ pub async fn handle_execute(
         execution_ms,
         mongo_query,
         index_analysis: None,
+        advice: vec![],
         requires_confirmation: false,
         affected_count,
     };

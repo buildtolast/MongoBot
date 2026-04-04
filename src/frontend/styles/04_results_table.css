@@ -445,3 +445,32 @@ tr.expanded-row td {
 .backup-status.backup-done {
     color: var(--success);
 }
+
+/* Approval Bar */
+.approval-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    background: rgba(88, 166, 255, 0.08);
+    border: 1px solid rgba(88, 166, 255, 0.25);
+    border-radius: var(--radius);
+    margin-bottom: 12px;
+}
+.approval-bar[hidden] { display: none; }
+.approval-label {
+    font-size: 0.85rem;
+    color: var(--accent);
+}
+.approval-actions {
+    display: flex;
+    gap: 8px;
+}
+.approve-btn {
+    background: var(--success) !important;
+    color: #fff !important;
+    border-color: var(--success) !important;
+}
+.approve-btn:hover {
+    background: #2ea043 !important;
+}
