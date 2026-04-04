@@ -104,6 +104,17 @@ async function executeWrite(parsedQuery) {
     }
 }
 
+async function fetchConfig() {
+    try {
+        var resp = await fetch(API_BASE + '/api/config');
+        if (!resp.ok) throw new Error('Failed to fetch config');
+        return await resp.json();
+    } catch (err) {
+        console.warn('Config fetch failed:', err);
+        return null;
+    }
+}
+
 async function fetchSchemas() {
     try {
         var resp = await fetch(API_BASE + '/api/schemas');

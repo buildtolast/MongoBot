@@ -57,3 +57,38 @@ pub async fn version() -> HttpResponse {
         "built_at": option_env!("BUILT_AT").unwrap_or("unknown"),
     }))
 }
+
+/// GET /api/config — Return current configuration (secrets redacted).
+pub async fn get_config(state: web::Data<AppState>) -> HttpResponse {
+    let config = &state.config;
+    HttpResponse::Ok().json(json!({
+        "llm": {
+            "provider": config.llm_provider.to_string(),
+            "ollama_url": config.ollama_url,
+            "ollama_model": config.ollama_model,
+            "lmstudio_url": config.lmstudio_url,
+            "lmstudio_model": config.lmstudio_model,
+            "anthropic_api_url": config.anthropic_api_url,
+            "openai_api_url": config.openai_api_url,
+            "cloud_llm_model": config.cloud_llm_model,
+            "cloud_llm_api_key": config.cloud_llm_api_key.as_ref().map(|_| "***set***"),
+        },
+        "mongodb": {
+            "uri": config.mongo_uri,
+            "database": config.mongo_db_name,
+        },
+        "server": {
+            "host": config.host,
+            "port": config.port,
+            "dashboard_auth": config.dashboard_token.is_some(),
+        },
+        "safety": {
+            "max_result_rows": config.max_result_rows,
+            "allowed_operations": config.allowed_operations,
+        },
+        "slack": {
+            "bot_token": config.slack_bot_token.as_ref().map(|_| "***set***"),
+            "signing_secret": config.slack_signing_secret.as_ref().map(|_| "***set***"),
+        }
+    }))
+}

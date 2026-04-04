@@ -178,6 +178,22 @@
             }
         });
 
+        // Settings modal
+        document.getElementById('settings-btn').addEventListener('click', function() {
+            var modal = document.getElementById('settings-modal');
+            modal.hidden = false;
+            fetchConfig().then(function(config) {
+                if (!config) {
+                    document.getElementById('settings-body').innerHTML = '<div class="settings-loading">Failed to load configuration</div>';
+                    return;
+                }
+                renderConfig(config);
+            });
+        });
+        document.getElementById('settings-close').addEventListener('click', function() {
+            document.getElementById('settings-modal').hidden = true;
+        });
+
         // Approve mode toggle
         document.getElementById('approve-toggle').addEventListener('change', function() {
             AppState.approveMode = this.checked;
@@ -380,6 +396,10 @@
         }
         mongoEl.textContent = queryText;
         mongoEl.hidden = false;
+        // Make mongo query editable in approval mode
+        mongoEl.contentEditable = 'true';
+        mongoEl.classList.add('editable');
+        mongoEl.title = 'Edit the MongoDB query before approving';
         var mongoToggle = document.querySelector('.mongo-toggle');
         if (mongoToggle) {
             mongoToggle.classList.add('open');
@@ -395,6 +415,10 @@
         var parsedEl = document.getElementById('parsed-query-json');
         parsedEl.textContent = JSON.stringify(response.parsed, null, 2);
         parsedEl.hidden = false;
+        // Make parsed query editable in approval mode
+        parsedEl.contentEditable = 'true';
+        parsedEl.classList.add('editable');
+        parsedEl.title = 'Edit the parsed query JSON before approving';
         var parsedToggle = document.querySelector('#query-inspector .collapsible-toggle');
         if (parsedToggle) {
             parsedToggle.classList.add('open');
@@ -426,28 +450,57 @@
     function executeApproved() {
         var response = AppState.pendingApproval;
         if (!response) return;
+
+        // Read possibly-edited parsed query from the UI
+        var parsedEl = document.getElementById('parsed-query-json');
+        var parsedJson;
+        try {
+            parsedJson = JSON.parse(parsedEl.textContent);
+        } catch (e) {
+            showError('Invalid JSON in parsed query: ' + e.message);
+            return;
+        }
+
         AppState.pendingApproval = null;
         showApprovalButtons(false);
+
+        // Reset editable state
+        parsedEl.contentEditable = 'false';
+        parsedEl.classList.remove('editable');
+        var mongoEl = document.getElementById('mongo-query-cmd');
+        mongoEl.contentEditable = 'false';
+        mongoEl.classList.remove('editable');
+
         showLoading(true);
 
-        var model = document.getElementById('model-select').value;
-        queryApi(AppState.currentQuery, model).then(function(result) {
-            showLoading(false);
-            if (result.requires_confirmation) {
-                showConfirmModal(result);
-                return;
-            }
-            renderResults(result);
-            addToHistory(
-                AppState.currentQuery,
-                result.parsed ? result.parsed.collection : '',
-                result.count || 0,
-                result.execution_ms
-            );
-            renderHistory(AppState.queryHistory);
-        }).catch(function() {
-            showLoading(false);
-        });
+        var isWrite = ['insert', 'update', 'delete'].indexOf(parsedJson.operation) >= 0;
+
+        if (isWrite) {
+            executeWrite(parsedJson).then(function(result) {
+                showLoading(false);
+                renderWriteResult(result);
+            }).catch(function() { showLoading(false); });
+        } else {
+            // For reads, re-run the original query text
+            var model = document.getElementById('model-select').value;
+            queryApi(AppState.currentQuery, model).then(function(result) {
+                showLoading(false);
+                if (result.requires_confirmation) {
+                    showConfirmModal(result);
+                    return;
+                }
+                renderResults(result);
+                addToHistory(
+                    AppState.currentQuery,
+                    result.parsed ? result.parsed.collection : '',
+                    result.count || 0,
+                    result.execution_ms
+                );
+                renderHistory(AppState.queryHistory);
+            }).catch(function() {
+                showLoading(false);
+            });
+        }
     }
 
     function rejectQuery() {

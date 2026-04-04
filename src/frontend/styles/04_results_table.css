@@ -474,3 +474,65 @@ tr.expanded-row td {
 .approve-btn:hover {
     background: #2ea043 !important;
 }
+
+/* Settings Modal */
+.settings-card {
+    max-width: 700px;
+}
+.settings-section {
+    margin-bottom: 16px;
+}
+.settings-section h4 {
+    color: var(--accent);
+    font-size: 0.85rem;
+    margin: 0 0 8px 0;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+.settings-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px 16px;
+}
+.settings-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 4px 0;
+    font-size: 0.8rem;
+}
+.settings-key {
+    color: var(--text-secondary);
+}
+.settings-value {
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+}
+.settings-value.secret {
+    color: var(--warning);
+}
+.settings-value.not-set {
+    color: var(--text-secondary);
+    font-style: italic;
+}
+.settings-loading {
+    text-align: center;
+    color: var(--text-secondary);
+    padding: 20px;
+}
+
+/* Editable query in approval mode */
+.code-block.editable,
+pre.editable {
+    border-color: var(--accent);
+    background: rgba(88, 166, 255, 0.08);
+    cursor: text;
+    outline: none;
+    min-height: 60px;
+}
+.code-block.editable:focus,
+pre.editable:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.2);
+}

@@ -25,6 +25,7 @@
         <span id="ollama-status" class="status-badge" title="Ollama LLM">LLM</span>
         <span id="mongo-status" class="status-badge" title="MongoDB">DB</span>
         <span id="ws-status" class="status-badge" title="WebSocket">WS</span>
+        <button id="settings-btn" class="icon-btn" title="Settings">&#9881;</button>
       </div>
     </header>
     <section id="query-section">
@@ -111,6 +112,17 @@
         <div class="modal-footer">
           <button id="confirm-cancel" class="modal-btn modal-btn-cancel">Cancel</button>
           <button id="confirm-execute" class="modal-btn modal-btn-danger">Execute Write</button>
+        </div>
+      </div>
+    </div>
+    <div id="settings-modal" class="modal-overlay" hidden>
+      <div class="modal-card settings-card">
+        <div class="modal-header">
+          <h3>Configuration</h3>
+          <button id="settings-close" class="modal-close">&times;</button>
+        </div>
+        <div class="modal-body" id="settings-body">
+          <div class="settings-loading">Loading configuration...</div>
         </div>
       </div>
     </div>

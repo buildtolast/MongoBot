@@ -63,6 +63,7 @@ async fn main() -> anyhow::Result<()> {
             .route("/api/health", web::get().to(handlers::health::health_check))
             .route("/api/models", web::get().to(handlers::health::list_models))
             .route("/api/version", web::get().to(handlers::health::version))
+            .route("/api/config", web::get().to(handlers::health::get_config))
 
             // === Slack webhooks (own auth via signing secret) ===
             .route(

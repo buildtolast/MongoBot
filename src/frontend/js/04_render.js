@@ -2,6 +2,64 @@
    Rendering Functions
    ============================================= */
 
+function renderConfig(config) {
+    var body = document.getElementById('settings-body');
+    var html = '';
+
+    function section(title, items) {
+        html += '<div class="settings-section"><h4>' + title + '</h4><div class="settings-grid">';
+        items.forEach(function(item) {
+            var valClass = 'settings-value';
+            var val = item[1];
+            if (val === '***set***') { valClass += ' secret'; val = '***set***'; }
+            else if (val === null || val === undefined) { valClass += ' not-set'; val = 'not set'; }
+            else { val = String(val); }
+            html += '<div class="settings-item"><span class="settings-key">' + item[0] + '</span><span class="' + valClass + '">' + val + '</span></div>';
+        });
+        html += '</div></div>';
+    }
+
+    var llm = config.llm || {};
+    section('LLM Provider', [
+        ['Provider', llm.provider],
+        ['Ollama URL', llm.ollama_url],
+        ['Ollama Model', llm.ollama_model],
+        ['LM Studio URL', llm.lmstudio_url],
+        ['LM Studio Model', llm.lmstudio_model],
+        ['Anthropic URL', llm.anthropic_api_url],
+        ['OpenAI URL', llm.openai_api_url],
+        ['Cloud Model', llm.cloud_llm_model],
+        ['Cloud API Key', llm.cloud_llm_api_key],
+    ]);
+
+    var db = config.mongodb || {};
+    section('MongoDB', [
+        ['URI', db.uri],
+        ['Database', db.database],
+    ]);
+
+    var srv = config.server || {};
+    section('Server', [
+        ['Host', srv.host],
+        ['Port', srv.port],
+        ['Dashboard Auth', srv.dashboard_auth ? 'Enabled' : 'Disabled'],
+    ]);
+
+    var safety = config.safety || {};
+    section('Safety', [
+        ['Max Result Rows', safety.max_result_rows],
+        ['Allowed Operations', (safety.allowed_operations || []).join(', ')],
+    ]);
+
+    var slack = config.slack || {};
+    section('Slack', [
+        ['Bot Token', slack.bot_token],
+        ['Signing Secret', slack.signing_secret],
+    ]);
+
+    body.innerHTML = html;
+}
+
 function renderResults(response) {
     // API returns: { parsed: {...}, results: [...] or {count: N}, count: N, execution_ms: N }
     var section = document.getElementById('results-section');
