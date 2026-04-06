@@ -60,6 +60,11 @@ pub fn analyze_query(
     check_distinct_without_index(query, schema, &mut advice);
     check_large_in_array(query, &mut advice);
     check_same_field_range(query, &mut advice);
+    check_aggregate_no_match(query, &mut advice);
+    check_lookup_performance(query, &mut advice);
+    check_unwind_warning(query, &mut advice);
+    check_or_query(query, &mut advice);
+    check_group_high_cardinality(query, &mut advice);
 
     advice
 }
@@ -459,6 +464,75 @@ fn check_distinct_without_index(
     }
 }
 
+/// Warn when aggregate has $group but no $match — full collection scan before grouping.
+fn check_aggregate_no_match(query: &ParsedQuery, advice: &mut Vec<QueryAdvice>) {
+    if query.operation != QueryOperation::Aggregate {
+        return;
+    }
+    if query.group_by.is_some() && query.filters.is_empty() && query.or_filters.is_empty() {
+        advice.push(QueryAdvice::warning(
+            "AGGREGATE_NO_MATCH",
+            "Aggregate with $group but no $match — this will scan the entire collection before grouping. \
+             Consider adding filters to reduce the working set.",
+        ));
+    }
+}
+
+/// Info when $lookup is used — cross-collection joins can be expensive.
+fn check_lookup_performance(query: &ParsedQuery, advice: &mut Vec<QueryAdvice>) {
+    if let Some(ref lookup) = query.lookup {
+        advice.push(QueryAdvice::info(
+            "LOOKUP_PERF",
+            format!(
+                "$lookup joins '{}' → '{}'. Cross-collection joins can be slow on large collections. \
+                 Ensure '{}.{}' is indexed.",
+                query.collection, lookup.from, lookup.from, lookup.foreign_field
+            ),
+        ));
+    }
+}
+
+/// Info when $unwind is used — array flattening can multiply document count.
+fn check_unwind_warning(query: &ParsedQuery, advice: &mut Vec<QueryAdvice>) {
+    if let Some(ref field) = query.unwind {
+        advice.push(QueryAdvice::info(
+            "UNWIND_ARRAY",
+            format!(
+                "$unwind on '{}' will create one output document per array element. \
+                 Large arrays may cause significant result expansion.",
+                field
+            ),
+        ));
+    }
+}
+
+/// Info when $or is used — each branch may need its own index.
+fn check_or_query(query: &ParsedQuery, advice: &mut Vec<QueryAdvice>) {
+    if !query.or_filters.is_empty() {
+        advice.push(QueryAdvice::info(
+            "OR_QUERY",
+            format!(
+                "$or with {} branches — MongoDB evaluates each branch independently. \
+                 Each branch should have its own supporting index for optimal performance.",
+                query.or_filters.len()
+            ),
+        ));
+    }
+}
+
+/// Info when grouping by a high-cardinality field like _id.
+fn check_group_high_cardinality(query: &ParsedQuery, advice: &mut Vec<QueryAdvice>) {
+    if let Some(ref group) = query.group_by {
+        if group.field == "_id" {
+            advice.push(QueryAdvice::info(
+                "GROUP_HIGH_CARDINALITY",
+                "Grouping by '_id' produces one group per document — this is usually not useful. \
+                 Did you mean to group by a different field?",
+            ));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -469,13 +543,8 @@ mod tests {
             collection: "test".to_string(),
             operation: QueryOperation::Find,
             filters,
-            projection: vec![],
-            sort: None,
             limit,
-            document: None,
-            update_fields: None,
-            update_many: false,
-            delete_many: false,
+            ..Default::default()
         }
     }
 
@@ -782,14 +851,8 @@ mod tests {
         let q = ParsedQuery {
             collection: "users".to_string(),
             operation: QueryOperation::Update,
-            filters: vec![],
-            projection: vec![],
-            sort: None,
-            limit: 100,
-            document: None,
             update_fields: Some(serde_json::json!({"active": false})),
-            update_many: false,
-            delete_many: false,
+            ..Default::default()
         };
         let advice = analyze_query(&q, None);
         assert!(advice.iter().any(|a| a.code == "UPDATE_NO_FILTER" && a.severity == "error"));
@@ -800,14 +863,7 @@ mod tests {
         let q = ParsedQuery {
             collection: "users".to_string(),
             operation: QueryOperation::Delete,
-            filters: vec![],
-            projection: vec![],
-            sort: None,
-            limit: 100,
-            document: None,
-            update_fields: None,
-            update_many: false,
-            delete_many: false,
+            ..Default::default()
         };
         let advice = analyze_query(&q, None);
         assert!(advice.iter().any(|a| a.code == "DELETE_NO_FILTER" && a.severity == "error"));
@@ -819,13 +875,9 @@ mod tests {
             collection: "users".to_string(),
             operation: QueryOperation::Update,
             filters: vec![string_filter("status", FilterOperator::Eq, "inactive")],
-            projection: vec![],
-            sort: None,
-            limit: 100,
-            document: None,
             update_fields: Some(serde_json::json!({"archived": true})),
             update_many: true,
-            delete_many: false,
+            ..Default::default()
         };
         let advice = analyze_query(&q, None);
         assert!(advice.iter().any(|a| a.code == "UPDATE_MANY" && a.severity == "warning"));
@@ -838,13 +890,8 @@ mod tests {
             collection: "logs".to_string(),
             operation: QueryOperation::Delete,
             filters: vec![num_filter("age_days", FilterOperator::Gt, 90)],
-            projection: vec![],
-            sort: None,
-            limit: 100,
-            document: None,
-            update_fields: None,
-            update_many: false,
             delete_many: true,
+            ..Default::default()
         };
         let advice = analyze_query(&q, None);
         assert!(advice.iter().any(|a| a.code == "DELETE_MANY" && a.severity == "warning"));
@@ -857,14 +904,8 @@ mod tests {
         let q = ParsedQuery {
             collection: "movies".to_string(),
             operation: QueryOperation::Distinct,
-            filters: vec![],
             projection: vec!["genre".to_string()],
-            sort: None,
-            limit: 100,
-            document: None,
-            update_fields: None,
-            update_many: false,
-            delete_many: false,
+            ..Default::default()
         };
         let schema = make_schema(5, vec![index_on("title")]);
         let advice = analyze_query(&q, Some(&schema));
@@ -876,14 +917,8 @@ mod tests {
         let q = ParsedQuery {
             collection: "movies".to_string(),
             operation: QueryOperation::Distinct,
-            filters: vec![],
             projection: vec!["genre".to_string()],
-            sort: None,
-            limit: 100,
-            document: None,
-            update_fields: None,
-            update_many: false,
-            delete_many: false,
+            ..Default::default()
         };
         let schema = make_schema(5, vec![index_on("genre")]);
         let advice = analyze_query(&q, Some(&schema));
@@ -901,16 +936,12 @@ mod tests {
                 string_filter("name", FilterOperator::Ne, "admin"),
                 string_filter("bio", FilterOperator::Regex, "developer"),
             ],
-            projection: vec![],
             sort: Some(SortSpec {
                 field: "created_at".to_string(),
                 order: -1,
             }),
             limit: 10000,
-            document: None,
-            update_fields: None,
-            update_many: false,
-            delete_many: false,
+            ..Default::default()
         };
         let schema = make_schema(12, vec![index_on("name")]);
         let advice = analyze_query(&q, Some(&schema));
@@ -947,5 +978,72 @@ mod tests {
             "Expected no warnings/errors, got: {:?}",
             warnings_or_errors
         );
+    }
+
+    // ── New advisory rules ──────────────────────────────────────
+
+    #[test]
+    fn aggregate_no_match_warns() {
+        let q = ParsedQuery {
+            collection: "orders".to_string(),
+            operation: QueryOperation::Aggregate,
+            group_by: Some(crate::domain::models::GroupSpec {
+                field: "status".to_string(),
+                accumulators: vec![crate::domain::models::Accumulator {
+                    output_field: "count".to_string(),
+                    operator: "$sum".to_string(),
+                    input_field: "1".to_string(),
+                }],
+            }),
+            ..Default::default()
+        };
+        let advice = analyze_query(&q, None);
+        assert!(advice.iter().any(|a| a.code == "AGGREGATE_NO_MATCH"));
+    }
+
+    #[test]
+    fn lookup_triggers_info() {
+        let q = ParsedQuery {
+            collection: "orders".to_string(),
+            operation: QueryOperation::Aggregate,
+            lookup: Some(crate::domain::models::LookupSpec {
+                from: "customers".to_string(),
+                local_field: "cid".to_string(),
+                foreign_field: "_id".to_string(),
+                as_field: "customer".to_string(),
+            }),
+            ..Default::default()
+        };
+        let advice = analyze_query(&q, None);
+        assert!(advice.iter().any(|a| a.code == "LOOKUP_PERF"));
+    }
+
+    #[test]
+    fn or_query_triggers_info() {
+        let q = ParsedQuery {
+            collection: "orders".to_string(),
+            or_filters: vec![
+                vec![string_filter("status", FilterOperator::Eq, "pending")],
+                vec![string_filter("status", FilterOperator::Eq, "shipped")],
+            ],
+            ..Default::default()
+        };
+        let advice = analyze_query(&q, None);
+        assert!(advice.iter().any(|a| a.code == "OR_QUERY"));
+    }
+
+    #[test]
+    fn group_by_id_warns() {
+        let q = ParsedQuery {
+            collection: "users".to_string(),
+            operation: QueryOperation::Aggregate,
+            group_by: Some(crate::domain::models::GroupSpec {
+                field: "_id".to_string(),
+                accumulators: vec![],
+            }),
+            ..Default::default()
+        };
+        let advice = analyze_query(&q, None);
+        assert!(advice.iter().any(|a| a.code == "GROUP_HIGH_CARDINALITY"));
     }
 }

@@ -41,15 +41,7 @@ mod tests {
     fn test_validate_valid_query() {
         let query = ParsedQuery {
             collection: "users".into(),
-            operation: QueryOperation::Find,
-            filters: vec![],
-            projection: vec![],
-            sort: None,
-            limit: 100,
-            document: None,
-            update_fields: None,
-            update_many: false,
-            delete_many: false,
+            ..Default::default()
         };
         assert!(validate_parsed_query(&query).is_ok());
     }
@@ -58,15 +50,7 @@ mod tests {
     fn test_validate_empty_collection() {
         let query = ParsedQuery {
             collection: "".into(),
-            operation: QueryOperation::Find,
-            filters: vec![],
-            projection: vec![],
-            sort: None,
-            limit: 100,
-            document: None,
-            update_fields: None,
-            update_many: false,
-            delete_many: false,
+            ..Default::default()
         };
         assert!(validate_parsed_query(&query).is_err());
     }
@@ -75,15 +59,8 @@ mod tests {
     fn test_validate_zero_limit() {
         let query = ParsedQuery {
             collection: "users".into(),
-            operation: QueryOperation::Find,
-            filters: vec![],
-            projection: vec![],
-            sort: None,
             limit: 0,
-            document: None,
-            update_fields: None,
-            update_many: false,
-            delete_many: false,
+            ..Default::default()
         };
         assert!(validate_parsed_query(&query).is_err());
     }
@@ -92,19 +69,12 @@ mod tests {
     fn test_validate_empty_filter_field() {
         let query = ParsedQuery {
             collection: "users".into(),
-            operation: QueryOperation::Find,
             filters: vec![Filter {
                 field: "".into(),
                 operator: FilterOperator::Eq,
                 value: serde_json::Value::Null,
             }],
-            projection: vec![],
-            sort: None,
-            limit: 100,
-            document: None,
-            update_fields: None,
-            update_many: false,
-            delete_many: false,
+            ..Default::default()
         };
         assert!(validate_parsed_query(&query).is_err());
     }

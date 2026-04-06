@@ -68,6 +68,46 @@ impl SafetyChecker {
             check_injection(&sort.field)?;
         }
 
+        // 3b. Check injection in or_filters
+        for branch in &query.or_filters {
+            for filter in branch {
+                check_injection(&filter.field)?;
+            }
+        }
+
+        // 3c. Validate aggregate pipeline fields
+        if let Some(ref group) = query.group_by {
+            check_injection(&group.field)?;
+            for acc in &group.accumulators {
+                check_injection(&acc.input_field)?;
+                check_injection(&acc.output_field)?;
+                // Whitelist accumulator operators
+                let op = acc.operator.trim_start_matches('$');
+                let allowed = ["sum", "avg", "min", "max", "first", "last", "push", "addToSet", "count"];
+                if !allowed.contains(&op) {
+                    return Err(SafetyError::InjectionDetected(format!(
+                        "Unsupported accumulator: {}", acc.operator
+                    )));
+                }
+            }
+        }
+        if let Some(ref lookup) = query.lookup {
+            check_injection(&lookup.local_field)?;
+            check_injection(&lookup.foreign_field)?;
+            check_injection(&lookup.as_field)?;
+        }
+        if let Some(ref unwind) = query.unwind {
+            check_injection(unwind.trim_start_matches('$'))?;
+        }
+        if let Some(ref bucket) = query.bucket {
+            check_injection(&bucket.group_by)?;
+        }
+
+        // 3d. Validate $expr is a safe cross-field comparison
+        if let Some(ref expr) = query.expr {
+            check_expr_safety(expr)?;
+        }
+
         // 4. Validate write-specific safety rules
         match query.operation {
             crate::domain::models::QueryOperation::Insert => {
@@ -115,31 +155,50 @@ impl SafetyChecker {
         if let Some(schema) = schema {
             let known_fields: Vec<&str> = schema.fields.iter().map(|f| f.name.as_str()).collect();
 
+            let check_field = |field: &str| -> Result<(), SafetyError> {
+                if !field_matches(field, &known_fields) {
+                    return Err(SafetyError::UnknownField {
+                        field: field.to_string(),
+                        collection: query.collection.clone(),
+                    });
+                }
+                Ok(())
+            };
+
             for filter in &query.filters {
-                if !field_matches(&filter.field, &known_fields) {
-                    return Err(SafetyError::UnknownField {
-                        field: filter.field.clone(),
-                        collection: query.collection.clone(),
-                    });
-                }
+                check_field(&filter.field)?;
             }
-
             for proj in &query.projection {
-                if !field_matches(proj, &known_fields) {
-                    return Err(SafetyError::UnknownField {
-                        field: proj.clone(),
-                        collection: query.collection.clone(),
-                    });
+                check_field(proj)?;
+            }
+            if let Some(ref sort) = query.sort {
+                check_field(&sort.field)?;
+            }
+            // Validate or_filters fields
+            for branch in &query.or_filters {
+                for filter in branch {
+                    check_field(&filter.field)?;
                 }
             }
-
-            if let Some(ref sort) = query.sort {
-                if !field_matches(&sort.field, &known_fields) {
-                    return Err(SafetyError::UnknownField {
-                        field: sort.field.clone(),
-                        collection: query.collection.clone(),
-                    });
+            // Validate aggregate field references
+            if let Some(ref group) = query.group_by {
+                if !group.field.is_empty() && group.field != "null" {
+                    check_field(&group.field)?;
                 }
+                for acc in &group.accumulators {
+                    if !acc.input_field.is_empty() && acc.input_field != "1" {
+                        check_field(acc.input_field.trim_start_matches('$'))?;
+                    }
+                }
+            }
+            if let Some(ref lookup) = query.lookup {
+                check_field(&lookup.local_field)?;
+            }
+            if let Some(ref unwind) = query.unwind {
+                check_field(unwind.trim_start_matches('$'))?;
+            }
+            if let Some(ref bucket) = query.bucket {
+                check_field(&bucket.group_by)?;
             }
         }
 
@@ -172,7 +231,8 @@ fn field_matches(field: &str, known: &[&str]) -> bool {
 
 /// Check a field name for potential injection patterns.
 fn check_injection(field: &str) -> Result<(), SafetyError> {
-    let suspicious_patterns = ["$where", "$expr", "$function", "$accumulator", "mapReduce"];
+    // $expr is handled separately via check_expr_safety — not blocked here
+    let suspicious_patterns = ["$where", "$function", "$accumulator", "mapReduce"];
 
     let lower = field.to_lowercase();
     for pattern in &suspicious_patterns {
@@ -183,6 +243,61 @@ fn check_injection(field: &str) -> Result<(), SafetyError> {
 
     if field.starts_with('$') {
         return Err(SafetyError::InjectionDetected(field.to_string()));
+    }
+
+    Ok(())
+}
+
+/// Validate that an $expr value is a safe cross-field comparison.
+/// Only allows simple comparisons like { "$gt": ["$field_a", "$field_b"] }.
+fn check_expr_safety(expr: &serde_json::Value) -> Result<(), SafetyError> {
+    let obj = expr.as_object().ok_or_else(|| {
+        SafetyError::InjectionDetected("$expr must be an object".into())
+    })?;
+
+    if obj.len() != 1 {
+        return Err(SafetyError::InjectionDetected(
+            "$expr must have exactly one operator".into(),
+        ));
+    }
+
+    let (op, val) = obj.iter().next().unwrap();
+    let allowed_ops = ["$gt", "$gte", "$lt", "$lte", "$eq", "$ne"];
+    if !allowed_ops.contains(&op.as_str()) {
+        return Err(SafetyError::InjectionDetected(format!(
+            "$expr operator '{}' not allowed — only comparisons permitted", op
+        )));
+    }
+
+    // Value must be a 2-element array of field references (strings starting with $)
+    let arr = val.as_array().ok_or_else(|| {
+        SafetyError::InjectionDetected("$expr comparison must have an array of two field references".into())
+    })?;
+
+    if arr.len() != 2 {
+        return Err(SafetyError::InjectionDetected(
+            "$expr comparison must have exactly two operands".into(),
+        ));
+    }
+
+    // Each operand must be a string starting with $ (field ref) or a literal number/string
+    for operand in arr {
+        match operand {
+            serde_json::Value::String(s) => {
+                // Field references start with $, plain strings are allowed too
+                if s.starts_with('$') {
+                    // Check the field name part for injection
+                    let field_name = s.trim_start_matches('$');
+                    check_injection(field_name)?;
+                }
+            }
+            serde_json::Value::Number(_) | serde_json::Value::Bool(_) => {}
+            _ => {
+                return Err(SafetyError::InjectionDetected(
+                    "$expr operands must be field references or literals".into(),
+                ));
+            }
+        }
     }
 
     Ok(())
@@ -252,12 +367,7 @@ mod tests {
                 value: serde_json::json!(25),
             }],
             projection: vec!["name".into()],
-            sort: None,
-            limit: 100,
-            document: None,
-            update_fields: None,
-            update_many: false,
-            delete_many: false,
+            ..Default::default()
         };
         assert!(checker.validate(&query, Some(&test_schema())).is_ok());
     }
@@ -268,14 +378,7 @@ mod tests {
         let query = ParsedQuery {
             collection: "users".into(),
             operation: QueryOperation::Aggregate,
-            filters: vec![],
-            projection: vec![],
-            sort: None,
-            limit: 100,
-            document: None,
-            update_fields: None,
-            update_many: false,
-            delete_many: false,
+            ..Default::default()
         };
         let result = checker.validate(&query, None);
         assert!(matches!(result, Err(SafetyError::DisallowedOperation(_))));
@@ -287,14 +390,8 @@ mod tests {
         let query = ParsedQuery {
             collection: "users".into(),
             operation: QueryOperation::Find,
-            filters: vec![],
-            projection: vec![],
-            sort: None,
             limit: 200,
-            document: None,
-            update_fields: None,
-            update_many: false,
-            delete_many: false,
+            ..Default::default()
         };
         let result = checker.validate(&query, None);
         assert!(matches!(result, Err(SafetyError::LimitExceeded { .. })));
@@ -311,13 +408,7 @@ mod tests {
                 operator: FilterOperator::Eq,
                 value: serde_json::json!("1==1"),
             }],
-            projection: vec![],
-            sort: None,
-            limit: 100,
-            document: None,
-            update_fields: None,
-            update_many: false,
-            delete_many: false,
+            ..Default::default()
         };
         let result = checker.validate(&query, None);
         assert!(matches!(result, Err(SafetyError::InjectionDetected(_))));
@@ -334,13 +425,7 @@ mod tests {
                 operator: FilterOperator::Eq,
                 value: serde_json::json!("x"),
             }],
-            projection: vec![],
-            sort: None,
-            limit: 100,
-            document: None,
-            update_fields: None,
-            update_many: false,
-            delete_many: false,
+            ..Default::default()
         };
         let result = checker.validate(&query, Some(&test_schema()));
         assert!(matches!(result, Err(SafetyError::UnknownField { .. })));
@@ -352,14 +437,8 @@ mod tests {
         let query = ParsedQuery {
             collection: "users".into(),
             operation: QueryOperation::Delete,
-            filters: vec![],
-            projection: vec![],
-            sort: None,
-            limit: 100,
-            document: None,
-            update_fields: None,
-            update_many: false,
             delete_many: true,
+            ..Default::default()
         };
         let result = checker.validate(&query, None);
         assert!(matches!(result, Err(SafetyError::WriteValidation { .. })));
@@ -371,14 +450,7 @@ mod tests {
         let query = ParsedQuery {
             collection: "users".into(),
             operation: QueryOperation::Insert,
-            filters: vec![],
-            projection: vec![],
-            sort: None,
-            limit: 100,
-            document: None,
-            update_fields: None,
-            update_many: false,
-            delete_many: false,
+            ..Default::default()
         };
         let result = checker.validate(&query, None);
         assert!(matches!(result, Err(SafetyError::WriteValidation { .. })));
@@ -390,14 +462,8 @@ mod tests {
         let query = ParsedQuery {
             collection: "users".into(),
             operation: QueryOperation::Update,
-            filters: vec![],
-            projection: vec![],
-            sort: None,
-            limit: 100,
-            document: None,
             update_fields: Some(serde_json::json!({"name": "Bob"})),
-            update_many: false,
-            delete_many: false,
+            ..Default::default()
         };
         let result = checker.validate(&query, None);
         assert!(matches!(result, Err(SafetyError::WriteValidation { .. })));
@@ -406,5 +472,89 @@ mod tests {
     #[test]
     fn test_id_always_allowed() {
         assert!(field_matches("_id", &["name", "age"]));
+    }
+
+    // ── $expr safety ────────────────────────────────────────────
+
+    #[test]
+    fn test_expr_simple_comparison_allowed() {
+        let expr = serde_json::json!({"$gt": ["$age", "$min_age"]});
+        assert!(check_expr_safety(&expr).is_ok());
+    }
+
+    #[test]
+    fn test_expr_with_literal_allowed() {
+        let expr = serde_json::json!({"$gte": ["$score", 100]});
+        assert!(check_expr_safety(&expr).is_ok());
+    }
+
+    #[test]
+    fn test_expr_function_blocked() {
+        let expr = serde_json::json!({"$function": {"body": "return true", "args": [], "lang": "js"}});
+        assert!(check_expr_safety(&expr).is_err());
+    }
+
+    #[test]
+    fn test_expr_nested_object_blocked() {
+        let expr = serde_json::json!({"$gt": [{"$add": ["$a", "$b"]}, "$c"]});
+        assert!(check_expr_safety(&expr).is_err());
+    }
+
+    // ── Accumulator validation ──────────────────────────────────
+
+    #[test]
+    fn test_valid_accumulator_passes() {
+        let checker = test_checker();
+        let query = ParsedQuery {
+            collection: "orders".into(),
+            operation: QueryOperation::Aggregate,
+            group_by: Some(GroupSpec {
+                field: "name".into(),
+                accumulators: vec![Accumulator {
+                    output_field: "total".into(),
+                    operator: "$sum".into(),
+                    input_field: "age".into(),
+                }],
+            }),
+            ..Default::default()
+        };
+        assert!(checker.validate(&query, Some(&test_schema())).is_ok());
+    }
+
+    #[test]
+    fn test_invalid_accumulator_blocked() {
+        let checker = test_checker();
+        let query = ParsedQuery {
+            collection: "orders".into(),
+            operation: QueryOperation::Aggregate,
+            group_by: Some(GroupSpec {
+                field: "name".into(),
+                accumulators: vec![Accumulator {
+                    output_field: "result".into(),
+                    operator: "$evil".into(),
+                    input_field: "age".into(),
+                }],
+            }),
+            ..Default::default()
+        };
+        assert!(checker.validate(&query, Some(&test_schema())).is_err());
+    }
+
+    // ── or_filters injection check ──────────────────────────────
+
+    #[test]
+    fn test_or_filters_injection_caught() {
+        let checker = test_checker();
+        let query = ParsedQuery {
+            collection: "users".into(),
+            operation: QueryOperation::Find,
+            or_filters: vec![vec![Filter {
+                field: "$where".into(),
+                operator: FilterOperator::Eq,
+                value: serde_json::json!("1==1"),
+            }]],
+            ..Default::default()
+        };
+        assert!(checker.validate(&query, None).is_err());
     }
 }

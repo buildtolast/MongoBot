@@ -308,16 +308,41 @@ Collections:
 JSON format (REQUIRED fields: collection, operation, filters, limit):
 {{
   "collection": "name",
-  "operation": "find|count|distinct|aggregate|insert|update",
-  "filters": [{{"field":"name","operator":"eq|ne|gt|gte|lt|lte|in|nin|contains|regex","value":"x"}}],
+  "operation": "find|count|distinct|aggregate|insert|update|delete",
+  "filters": [{{"field":"name","operator":"eq|ne|gt|gte|lt|lte|in|nin|contains|regex|exists|all|size|type","value":"x"}}],
   "projection": [],
   "sort": {{"field":"name","order":1}},
   "limit": 100,
   "document": {{}},
-  "update_fields": {{}}
+  "update_fields": {{}},
+  "update_many": false,
+  "delete_many": false,
+  "or_filters": [[{{"field":"f","operator":"eq","value":"a"}}], [{{"field":"g","operator":"eq","value":"b"}}]],
+  "text_search": "search terms",
+  "expr": {{"$gt": ["$field_a", "$field_b"]}},
+  "group_by": {{"field": "category", "accumulators": [{{"output_field": "total", "operator": "$sum", "input_field": "amount"}}]}},
+  "lookup": {{"from": "other_collection", "local_field": "fk", "foreign_field": "_id", "as_field": "joined"}},
+  "unwind": "array_field",
+  "bucket": {{"group_by": "price", "boundaries": [0, 50, 100, 500]}}
 }}
 
-Rules: Use only fields from schema. Default limit 100. For date fields always use ISO 8601 format "YYYY-MM-DDT00:00:00Z" (e.g. "2010-01-01T00:00:00Z"), never bare years. For distinct: put the target field name in "projection" array. For insert: set "document". For update: set "filters" + "update_fields". Prefer indexed fields for filters/sort. For array fields use dot notation (e.g. "transactions.symbol") — when filtering on multiple sub-fields of the same array, list each as a separate filter.
+Rules:
+- Use only fields from schema. Default limit 100.
+- For date fields use ISO 8601 "YYYY-MM-DDT00:00:00Z" (e.g. "2010-01-01T00:00:00Z"), never bare years.
+- For distinct: put the target field in "projection".
+- For insert: set "document". For update: set "filters" + "update_fields".
+- Set "update_many": true to update all matches. Set "delete_many": true to delete all matches.
+- For OR conditions (e.g. "status is A or B"): use "or_filters" — each inner array is one OR branch.
+- For GROUP BY / aggregation: use "operation": "aggregate" with "group_by". The "field" is the group key. Each accumulator needs output_field, operator ($sum/$avg/$min/$max/$first/$last/$count), and input_field. Use input_field "1" for counting.
+- For JOINs across collections: use "lookup".
+- For flattening arrays before grouping: use "unwind" with the array field name.
+- For range bucketing: use "bucket" with boundaries array.
+- For cross-field comparison (e.g. "where total > budget"): use "expr" with {{"$gt": ["$total", "$budget"]}}.
+- For full-text search: use "text_search" instead of regex.
+- For checking field existence: use operator "exists" with value true/false.
+- For array contains all: use operator "all" with array value.
+- Prefer indexed fields for filters/sort.
+- For array fields use dot notation (e.g. "transactions.symbol").
 
 Query: {query}"#
     )
@@ -400,6 +425,37 @@ pub(crate) fn parse_llm_response(raw: &str) -> Result<ParsedQuery, AppError> {
     let update_many = obj.get("update_many").and_then(|v| v.as_bool()).unwrap_or(false);
     let delete_many = obj.get("delete_many").and_then(|v| v.as_bool()).unwrap_or(false);
 
+    // Parse aggregate pipeline fields
+    let group_by = obj.get("group_by").and_then(|v| {
+        serde_json::from_value::<crate::domain::models::GroupSpec>(v.clone()).ok()
+    });
+
+    let lookup = obj.get("lookup").and_then(|v| {
+        serde_json::from_value::<crate::domain::models::LookupSpec>(v.clone()).ok()
+    });
+
+    let unwind = obj.get("unwind").and_then(|v| v.as_str()).map(String::from);
+
+    let facet = obj.get("facet").cloned();
+
+    let bucket = obj.get("bucket").and_then(|v| {
+        serde_json::from_value::<crate::domain::models::BucketSpec>(v.clone()).ok()
+    });
+
+    // Parse or_filters: [[{filter}, ...], [{filter}, ...]]
+    let or_filters = obj.get("or_filters")
+        .and_then(|v| v.as_array())
+        .map(|branches| {
+            branches.iter()
+                .map(|branch| parse_filters_flexible(Some(branch)))
+                .filter(|f| !f.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let text_search = obj.get("text_search").and_then(|v| v.as_str()).map(String::from);
+    let expr = obj.get("expr").cloned();
+
     Ok(crate::domain::models::ParsedQuery {
         collection,
         operation,
@@ -411,6 +467,14 @@ pub(crate) fn parse_llm_response(raw: &str) -> Result<ParsedQuery, AppError> {
         update_fields,
         update_many,
         delete_many,
+        group_by,
+        lookup,
+        unwind,
+        facet,
+        bucket,
+        or_filters,
+        text_search,
+        expr,
     })
 }
 
@@ -428,18 +492,7 @@ fn parse_filters_flexible(filters_val: Option<&serde_json::Value>) -> Vec<crate:
                 let op = obj.get("operator")
                     .and_then(|v| v.as_str())
                     .unwrap_or("eq");
-                let operator = match op {
-                    "ne" => crate::domain::models::FilterOperator::Ne,
-                    "gt" => crate::domain::models::FilterOperator::Gt,
-                    "gte" => crate::domain::models::FilterOperator::Gte,
-                    "lt" => crate::domain::models::FilterOperator::Lt,
-                    "lte" => crate::domain::models::FilterOperator::Lte,
-                    "in" => crate::domain::models::FilterOperator::In,
-                    "nin" => crate::domain::models::FilterOperator::Nin,
-                    "contains" => crate::domain::models::FilterOperator::Contains,
-                    "regex" => crate::domain::models::FilterOperator::Regex,
-                    _ => crate::domain::models::FilterOperator::Eq,
-                };
+                let operator = parse_filter_operator(op);
                 return Some(crate::domain::models::Filter {
                     field: field.to_string(),
                     operator,
@@ -455,16 +508,7 @@ fn parse_filters_flexible(filters_val: Option<&serde_json::Value>) -> Vec<crate:
                 // Check if value is a mongo operator object like {"$gt": 5}
                 if let Some(inner_obj) = value.as_object() {
                     if let Some((op_key, op_val)) = inner_obj.iter().next() {
-                        let operator = match op_key.as_str() {
-                            "$ne" => crate::domain::models::FilterOperator::Ne,
-                            "$gt" => crate::domain::models::FilterOperator::Gt,
-                            "$gte" => crate::domain::models::FilterOperator::Gte,
-                            "$lt" => crate::domain::models::FilterOperator::Lt,
-                            "$lte" => crate::domain::models::FilterOperator::Lte,
-                            "$in" => crate::domain::models::FilterOperator::In,
-                            "$regex" => crate::domain::models::FilterOperator::Regex,
-                            _ => crate::domain::models::FilterOperator::Eq,
-                        };
+                        let operator = parse_filter_operator(op_key);
                         return Some(crate::domain::models::Filter {
                             field: field.clone(),
                             operator,
@@ -488,14 +532,7 @@ fn parse_filters_flexible(filters_val: Option<&serde_json::Value>) -> Vec<crate:
             if field.starts_with('$') { return None; }
             if let Some(inner) = value.as_object() {
                 if let Some((op_key, op_val)) = inner.iter().next() {
-                    let operator = match op_key.as_str() {
-                        "$ne" => crate::domain::models::FilterOperator::Ne,
-                        "$gt" => crate::domain::models::FilterOperator::Gt,
-                        "$gte" => crate::domain::models::FilterOperator::Gte,
-                        "$lt" => crate::domain::models::FilterOperator::Lt,
-                        "$lte" => crate::domain::models::FilterOperator::Lte,
-                        _ => crate::domain::models::FilterOperator::Eq,
-                    };
+                    let operator = parse_filter_operator(op_key);
                     return Some(crate::domain::models::Filter {
                         field: field.clone(), operator, value: op_val.clone(),
                     });
@@ -509,6 +546,26 @@ fn parse_filters_flexible(filters_val: Option<&serde_json::Value>) -> Vec<crate:
         }).collect()
     } else {
         vec![]
+    }
+}
+
+/// Parse a filter operator string (with or without $ prefix) into a FilterOperator.
+fn parse_filter_operator(op: &str) -> crate::domain::models::FilterOperator {
+    match op.trim_start_matches('$') {
+        "ne" => crate::domain::models::FilterOperator::Ne,
+        "gt" => crate::domain::models::FilterOperator::Gt,
+        "gte" => crate::domain::models::FilterOperator::Gte,
+        "lt" => crate::domain::models::FilterOperator::Lt,
+        "lte" => crate::domain::models::FilterOperator::Lte,
+        "in" => crate::domain::models::FilterOperator::In,
+        "nin" => crate::domain::models::FilterOperator::Nin,
+        "contains" => crate::domain::models::FilterOperator::Contains,
+        "regex" => crate::domain::models::FilterOperator::Regex,
+        "exists" => crate::domain::models::FilterOperator::Exists,
+        "all" => crate::domain::models::FilterOperator::All,
+        "size" => crate::domain::models::FilterOperator::Size,
+        "type" => crate::domain::models::FilterOperator::Type,
+        _ => crate::domain::models::FilterOperator::Eq,
     }
 }
 
@@ -558,5 +615,89 @@ mod tests {
         let prompt = build_prompt("find all users", "schema info here");
         assert!(prompt.contains("find all users"));
         assert!(prompt.contains("schema info here"));
+    }
+
+    #[test]
+    fn test_parse_response_with_group_by() {
+        let json = r#"{
+            "collection": "orders",
+            "operation": "aggregate",
+            "filters": [],
+            "limit": 100,
+            "group_by": {
+                "field": "category",
+                "accumulators": [
+                    {"output_field": "total", "operator": "$sum", "input_field": "amount"}
+                ]
+            }
+        }"#;
+        let parsed = parse_llm_response(json).unwrap();
+        assert_eq!(parsed.operation, crate::domain::models::QueryOperation::Aggregate);
+        let group = parsed.group_by.unwrap();
+        assert_eq!(group.field, "category");
+        assert_eq!(group.accumulators.len(), 1);
+        assert_eq!(group.accumulators[0].operator, "$sum");
+    }
+
+    #[test]
+    fn test_parse_response_with_or_filters() {
+        let json = r#"{
+            "collection": "orders",
+            "operation": "find",
+            "filters": [],
+            "limit": 100,
+            "or_filters": [
+                [{"field": "status", "operator": "eq", "value": "pending"}],
+                [{"field": "status", "operator": "eq", "value": "shipped"}]
+            ]
+        }"#;
+        let parsed = parse_llm_response(json).unwrap();
+        assert_eq!(parsed.or_filters.len(), 2);
+        assert_eq!(parsed.or_filters[0][0].field, "status");
+    }
+
+    #[test]
+    fn test_parse_response_with_lookup() {
+        let json = r#"{
+            "collection": "orders",
+            "operation": "aggregate",
+            "filters": [],
+            "limit": 100,
+            "lookup": {
+                "from": "customers",
+                "local_field": "cid",
+                "foreign_field": "_id",
+                "as_field": "customer"
+            }
+        }"#;
+        let parsed = parse_llm_response(json).unwrap();
+        let lookup = parsed.lookup.unwrap();
+        assert_eq!(lookup.from, "customers");
+        assert_eq!(lookup.as_field, "customer");
+    }
+
+    #[test]
+    fn test_parse_new_filter_operators() {
+        let json = r#"{
+            "collection": "users",
+            "operation": "find",
+            "filters": [
+                {"field": "phone", "operator": "exists", "value": true},
+                {"field": "tags", "operator": "all", "value": ["a", "b"]}
+            ],
+            "limit": 100
+        }"#;
+        let parsed = parse_llm_response(json).unwrap();
+        assert_eq!(parsed.filters[0].operator, crate::domain::models::FilterOperator::Exists);
+        assert_eq!(parsed.filters[1].operator, crate::domain::models::FilterOperator::All);
+    }
+
+    #[test]
+    fn test_parse_filter_operator_with_dollar_prefix() {
+        assert_eq!(parse_filter_operator("$gt"), crate::domain::models::FilterOperator::Gt);
+        assert_eq!(parse_filter_operator("exists"), crate::domain::models::FilterOperator::Exists);
+        assert_eq!(parse_filter_operator("$all"), crate::domain::models::FilterOperator::All);
+        assert_eq!(parse_filter_operator("$size"), crate::domain::models::FilterOperator::Size);
+        assert_eq!(parse_filter_operator("type"), crate::domain::models::FilterOperator::Type);
     }
 }

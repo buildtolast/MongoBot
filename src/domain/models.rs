@@ -41,10 +41,67 @@ pub struct ParsedQuery {
     /// Whether to delete all matching documents (default: false = deleteOne).
     #[serde(default)]
     pub delete_many: bool,
+
+    /// Group-by specification for aggregate $group stage.
+    #[serde(default)]
+    pub group_by: Option<GroupSpec>,
+
+    /// Cross-collection join ($lookup stage).
+    #[serde(default)]
+    pub lookup: Option<LookupSpec>,
+
+    /// Array field to flatten ($unwind stage).
+    #[serde(default)]
+    pub unwind: Option<String>,
+
+    /// Parallel sub-pipelines ($facet stage). Raw JSON since structure is free-form.
+    #[serde(default)]
+    pub facet: Option<serde_json::Value>,
+
+    /// Range grouping ($bucket stage).
+    #[serde(default)]
+    pub bucket: Option<BucketSpec>,
+
+    /// OR conditions — each inner Vec is one $or branch.
+    #[serde(default)]
+    pub or_filters: Vec<Vec<Filter>>,
+
+    /// Full-text search string ($text: { $search: "..." }).
+    #[serde(default)]
+    pub text_search: Option<String>,
+
+    /// Cross-field comparison ($expr). Raw JSON value.
+    #[serde(default)]
+    pub expr: Option<serde_json::Value>,
 }
 
 fn default_limit() -> usize {
     100
+}
+
+impl Default for ParsedQuery {
+    fn default() -> Self {
+        Self {
+            collection: String::new(),
+            operation: QueryOperation::default(),
+            filters: vec![],
+            projection: vec![],
+            sort: None,
+            limit: 100,
+            document: None,
+            update_fields: None,
+            update_many: false,
+            delete_many: false,
+            group_by: None,
+            lookup: None,
+            unwind: None,
+            facet: None,
+            bucket: None,
+            or_filters: vec![],
+            text_search: None,
+            expr: None,
+        }
+    }
 }
 
 /// MongoDB operation type.
@@ -113,6 +170,10 @@ pub enum FilterOperator {
     Nin,
     Contains,
     Regex,
+    Exists,
+    All,
+    Size,
+    Type,
 }
 
 /// Sort specification.
@@ -128,6 +189,53 @@ pub struct SortSpec {
 
 fn default_sort_order() -> i32 {
     1
+}
+
+/// Group-by specification for aggregate $group stage.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GroupSpec {
+    /// Field to group by (becomes _id). Use "null" for whole-collection aggregation.
+    pub field: String,
+    /// Accumulator expressions.
+    #[serde(default)]
+    pub accumulators: Vec<Accumulator>,
+}
+
+/// A single accumulator in a $group stage.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Accumulator {
+    /// Output field name in the grouped result.
+    pub output_field: String,
+    /// Accumulator operator: $sum, $avg, $min, $max, $first, $last, $push, $addToSet, $count.
+    pub operator: String,
+    /// Input field path (e.g. "amount"). Use "1" for $sum counting.
+    #[serde(default)]
+    pub input_field: String,
+}
+
+/// Lookup specification for aggregate $lookup stage (cross-collection join).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LookupSpec {
+    /// Foreign collection to join.
+    pub from: String,
+    /// Field in the local collection.
+    pub local_field: String,
+    /// Field in the foreign collection.
+    pub foreign_field: String,
+    /// Output array field name.
+    pub as_field: String,
+}
+
+/// Bucket specification for aggregate $bucket stage.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BucketSpec {
+    /// Field to bucket by.
+    pub group_by: String,
+    /// Boundary values for buckets.
+    pub boundaries: Vec<serde_json::Value>,
+    /// Label for values outside boundaries.
+    #[serde(default)]
+    pub default_bucket: Option<String>,
 }
 
 /// Schema definition for a MongoDB collection.

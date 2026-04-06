@@ -24,7 +24,7 @@ pub enum QueryResult {
 
 /// Execute a parsed query against MongoDB.
 pub async fn execute(pool: &MongoPool, query: &ParsedQuery) -> Result<QueryResult, AppError> {
-    let filter = build_filter(&query.filters)?;
+    let filter = build_filter(query)?;
 
     match query.operation {
         QueryOperation::Find => {
@@ -91,26 +91,7 @@ pub async fn execute(pool: &MongoPool, query: &ParsedQuery) -> Result<QueryResul
         }
 
         QueryOperation::Aggregate => {
-            // Build a simple pipeline from filters + sort + limit
-            let mut pipeline = Vec::new();
-
-            if !query.filters.is_empty() {
-                pipeline.push(doc! { "$match": &filter });
-            }
-
-            if let Some(ref sort_spec) = query.sort {
-                pipeline.push(doc! { "$sort": { &sort_spec.field: sort_spec.order } });
-            }
-
-            pipeline.push(doc! { "$limit": query.limit as i64 });
-
-            if !query.projection.is_empty() {
-                let mut proj = Document::new();
-                for field in &query.projection {
-                    proj.insert(field.as_str(), 1);
-                }
-                pipeline.push(doc! { "$project": proj });
-            }
+            let pipeline = build_aggregate_pipeline(query, &filter)?;
 
             let coll = pool.collection(&query.collection);
             let mut cursor = coll.aggregate(pipeline).await?;
@@ -209,14 +190,58 @@ fn build_single_condition(filter: &Filter) -> Result<Bson, AppError> {
             })?;
             Ok(Bson::Document(doc! { "$regex": pattern, "$options": "i" }))
         }
+        FilterOperator::Exists => {
+            let exists = filter.value.as_bool().unwrap_or(true);
+            Ok(Bson::Document(doc! { "$exists": exists }))
+        }
+        FilterOperator::All => {
+            let arr = to_bson_array(&filter.value)?;
+            Ok(Bson::Document(doc! { "$all": arr }))
+        }
+        FilterOperator::Size => {
+            let size = json_to_bson(&filter.value)?;
+            Ok(Bson::Document(doc! { "$size": size }))
+        }
+        FilterOperator::Type => {
+            let type_val = json_to_bson(&filter.value)?;
+            Ok(Bson::Document(doc! { "$type": type_val }))
+        }
     }
 }
 
-/// Build a BSON filter document from a list of Filter conditions.
+/// Build a complete BSON filter document from a ParsedQuery, including $or, $text, and $expr.
+pub(crate) fn build_filter(query: &ParsedQuery) -> Result<Document, AppError> {
+    let mut doc = build_and_filter(&query.filters)?;
+
+    // $or conditions
+    if !query.or_filters.is_empty() {
+        let mut or_branches: Vec<Bson> = Vec::new();
+        for branch in &query.or_filters {
+            let branch_doc = build_and_filter(branch)?;
+            or_branches.push(Bson::Document(branch_doc));
+        }
+        doc.insert("$or", Bson::Array(or_branches));
+    }
+
+    // $text search
+    if let Some(ref search) = query.text_search {
+        doc.insert("$text", doc! { "$search": search.as_str() });
+    }
+
+    // $expr (cross-field comparison)
+    if let Some(ref expr_val) = query.expr {
+        let bson_expr = json_to_bson(expr_val)?;
+        doc.insert("$expr", bson_expr);
+    }
+
+    Ok(doc)
+}
+
+/// Build AND filter conditions from a list of Filter structs.
 /// When multiple filters target fields inside the same array (e.g. transactions.symbol
 /// and transactions.amount), they are automatically grouped under $elemMatch so MongoDB
 /// matches on the SAME array element.
-pub(crate) fn build_filter(filters: &[Filter]) -> Result<Document, AppError> {
+fn build_and_filter(filters: &[Filter]) -> Result<Document, AppError> {
     // Group filters by their array prefix.
     // e.g. "transactions.symbol" and "transactions.amount" share prefix "transactions"
     // while "name" and "year" have no prefix (top-level).
@@ -361,9 +386,138 @@ fn to_bson_array(value: &serde_json::Value) -> Result<Bson, AppError> {
     }
 }
 
+/// Build a full aggregate pipeline from ParsedQuery structured fields.
+/// Order: $match → $lookup → $unwind → $group → $bucket → $facet → $sort → $limit → $project
+fn build_aggregate_pipeline(query: &ParsedQuery, match_filter: &Document) -> Result<Vec<Document>, AppError> {
+    let mut pipeline = Vec::new();
+
+    // $match — from filters + or_filters + text_search + expr
+    if !match_filter.is_empty() {
+        pipeline.push(doc! { "$match": match_filter });
+    }
+
+    // $lookup — cross-collection join
+    if let Some(ref lookup) = query.lookup {
+        pipeline.push(doc! {
+            "$lookup": {
+                "from": &lookup.from,
+                "localField": &lookup.local_field,
+                "foreignField": &lookup.foreign_field,
+                "as": &lookup.as_field,
+            }
+        });
+    }
+
+    // $unwind — flatten array field
+    if let Some(ref unwind_field) = query.unwind {
+        let path = if unwind_field.starts_with('$') {
+            unwind_field.clone()
+        } else {
+            format!("${unwind_field}")
+        };
+        pipeline.push(doc! { "$unwind": path });
+    }
+
+    // $group — group by + accumulators
+    if let Some(ref group) = query.group_by {
+        let id_val: Bson = if group.field == "null" || group.field.is_empty() {
+            Bson::Null
+        } else {
+            Bson::String(format!("${}", group.field))
+        };
+
+        let mut group_doc = doc! { "_id": id_val };
+        for acc in &group.accumulators {
+            let acc_val = build_accumulator_expr(&acc.operator, &acc.input_field)?;
+            group_doc.insert(acc.output_field.clone(), acc_val);
+        }
+        pipeline.push(doc! { "$group": group_doc });
+    }
+
+    // $bucket — range grouping
+    if let Some(ref bucket) = query.bucket {
+        let group_by_path = if bucket.group_by.starts_with('$') {
+            bucket.group_by.clone()
+        } else {
+            format!("${}", bucket.group_by)
+        };
+        let boundaries: Result<Vec<Bson>, _> = bucket.boundaries.iter().map(json_to_bson).collect();
+        let mut bucket_doc = doc! {
+            "groupBy": group_by_path,
+            "boundaries": Bson::Array(boundaries?),
+        };
+        if let Some(ref default) = bucket.default_bucket {
+            bucket_doc.insert("default", default.as_str());
+        }
+        // Always add count output
+        bucket_doc.insert("output", doc! { "count": { "$sum": 1 } });
+        pipeline.push(doc! { "$bucket": bucket_doc });
+    }
+
+    // $facet — parallel sub-pipelines (raw JSON passthrough)
+    if let Some(ref facet_val) = query.facet {
+        let bson_facet = json_to_bson(facet_val)?;
+        pipeline.push(doc! { "$facet": bson_facet });
+    }
+
+    // $sort
+    if let Some(ref sort_spec) = query.sort {
+        pipeline.push(doc! { "$sort": { &sort_spec.field: sort_spec.order } });
+    }
+
+    // $limit
+    pipeline.push(doc! { "$limit": query.limit as i64 });
+
+    // $project
+    if !query.projection.is_empty() {
+        let mut proj = Document::new();
+        for field in &query.projection {
+            proj.insert(field.as_str(), 1);
+        }
+        pipeline.push(doc! { "$project": proj });
+    }
+
+    Ok(pipeline)
+}
+
+/// Build a BSON accumulator expression like { "$sum": "$amount" } or { "$sum": 1 }.
+fn build_accumulator_expr(operator: &str, input_field: &str) -> Result<Bson, AppError> {
+    // Normalize operator — accept with or without $ prefix
+    let op = if operator.starts_with('$') {
+        operator.to_string()
+    } else {
+        format!("${operator}")
+    };
+
+    static ALLOWED_ACCUMULATORS: &[&str] = &[
+        "$sum", "$avg", "$min", "$max", "$first", "$last", "$push", "$addToSet", "$count",
+    ];
+    if !ALLOWED_ACCUMULATORS.contains(&op.as_str()) {
+        return Err(AppError::Validation(format!(
+            "Unsupported accumulator operator: {op}"
+        )));
+    }
+
+    // $count takes no input field
+    if op == "$count" {
+        return Ok(Bson::Document(doc! { &op: {} }));
+    }
+
+    // "1" means count (e.g. { $sum: 1 })
+    let input: Bson = if input_field == "1" || input_field.is_empty() {
+        Bson::Int64(1)
+    } else if input_field.starts_with('$') {
+        Bson::String(input_field.to_string())
+    } else {
+        Bson::String(format!("${input_field}"))
+    };
+
+    Ok(Bson::Document(doc! { &op: input }))
+}
+
 /// Build a MongoDB shell command string from a ParsedQuery (for display in the UI).
 pub fn build_mongo_shell_command(query: &ParsedQuery) -> String {
-    let filter = build_filter(&query.filters).unwrap_or_default();
+    let filter = build_filter(query).unwrap_or_default();
     let filter_str = format_bson_doc(&filter);
 
     match query.operation {
@@ -396,19 +550,77 @@ pub fn build_mongo_shell_command(query: &ParsedQuery) -> String {
         }
         QueryOperation::Aggregate => {
             let mut stages = Vec::new();
-            if !query.filters.is_empty() {
+
+            if !filter.is_empty() {
                 stages.push(format!("{{ $match: {} }}", filter_str));
             }
+
+            if let Some(ref lookup) = query.lookup {
+                stages.push(format!(
+                    "{{ $lookup: {{ from: \"{}\", localField: \"{}\", foreignField: \"{}\", as: \"{}\" }} }}",
+                    lookup.from, lookup.local_field, lookup.foreign_field, lookup.as_field
+                ));
+            }
+
+            if let Some(ref unwind_field) = query.unwind {
+                let path = if unwind_field.starts_with('$') {
+                    unwind_field.clone()
+                } else {
+                    format!("${unwind_field}")
+                };
+                stages.push(format!("{{ $unwind: \"{}\" }}", path));
+            }
+
+            if let Some(ref group) = query.group_by {
+                let id_str = if group.field == "null" || group.field.is_empty() {
+                    "null".to_string()
+                } else {
+                    format!("\"${}\"", group.field)
+                };
+                let accs: Vec<String> = group.accumulators.iter().map(|a| {
+                    let op = if a.operator.starts_with('$') { a.operator.clone() } else { format!("${}", a.operator) };
+                    let input = if a.input_field == "1" || a.input_field.is_empty() {
+                        "1".to_string()
+                    } else if a.input_field.starts_with('$') {
+                        format!("\"{}\"", a.input_field)
+                    } else {
+                        format!("\"${}\"", a.input_field)
+                    };
+                    format!("{}: {{ {}: {} }}", a.output_field, op, input)
+                }).collect();
+                stages.push(format!("{{ $group: {{ _id: {}, {} }} }}", id_str, accs.join(", ")));
+            }
+
+            if let Some(ref bucket) = query.bucket {
+                let bounds: Vec<String> = bucket.boundaries.iter()
+                    .map(|v| v.to_string())
+                    .collect();
+                let default_str = bucket.default_bucket.as_deref()
+                    .map(|d| format!(", default: \"{}\"", d))
+                    .unwrap_or_default();
+                stages.push(format!(
+                    "{{ $bucket: {{ groupBy: \"${}\", boundaries: [{}]{} }} }}",
+                    bucket.group_by, bounds.join(", "), default_str
+                ));
+            }
+
+            if query.facet.is_some() {
+                stages.push("{ $facet: { ... } }".to_string());
+            }
+
             if let Some(ref sort) = query.sort {
                 stages.push(format!("{{ $sort: {{ {}: {} }} }}", sort.field, sort.order));
             }
+
             stages.push(format!("{{ $limit: {} }}", query.limit));
+
             if !query.projection.is_empty() {
                 let proj: Vec<String> = query.projection.iter()
                     .map(|f| format!("{}: 1", f))
                     .collect();
                 stages.push(format!("{{ $project: {{ {} }} }}", proj.join(", ")));
             }
+
             format!("db.{}.aggregate([\n  {}\n])", query.collection, stages.join(",\n  "))
         }
 
@@ -663,7 +875,7 @@ mod tests {
 
     #[test]
     fn test_build_empty_filter() {
-        let doc = build_filter(&[]).unwrap();
+        let doc = build_and_filter(&[]).unwrap();
         assert!(doc.is_empty());
     }
 
@@ -674,7 +886,7 @@ mod tests {
             operator: FilterOperator::Eq,
             value: serde_json::Value::String("Alice".into()),
         }];
-        let doc = build_filter(&filters).unwrap();
+        let doc = build_and_filter(&filters).unwrap();
         assert_eq!(doc.get_str("name").unwrap(), "Alice");
     }
 
@@ -685,7 +897,7 @@ mod tests {
             operator: FilterOperator::Gt,
             value: serde_json::json!(25),
         }];
-        let doc = build_filter(&filters).unwrap();
+        let doc = build_and_filter(&filters).unwrap();
         let condition = doc.get_document("age").unwrap();
         assert_eq!(condition.get_i64("$gt").unwrap(), 25);
     }
@@ -728,7 +940,7 @@ mod tests {
             operator: FilterOperator::Contains,
             value: serde_json::Value::String("test".into()),
         }];
-        let doc = build_filter(&filters).unwrap();
+        let doc = build_and_filter(&filters).unwrap();
         let condition = doc.get_document("name").unwrap();
         assert!(condition.contains_key("$regex"));
         assert!(condition.contains_key("$options"));
@@ -741,6 +953,241 @@ mod tests {
             operator: FilterOperator::In,
             value: serde_json::Value::String("not_array".into()),
         }];
-        assert!(build_filter(&filters).is_err());
+        assert!(build_and_filter(&filters).is_err());
+    }
+
+    // ── New filter operators ───────────────────────────────────
+
+    #[test]
+    fn test_build_exists_filter() {
+        let filters = vec![Filter {
+            field: "phone".into(),
+            operator: FilterOperator::Exists,
+            value: serde_json::json!(true),
+        }];
+        let doc = build_and_filter(&filters).unwrap();
+        let cond = doc.get_document("phone").unwrap();
+        assert_eq!(cond.get_bool("$exists").unwrap(), true);
+    }
+
+    #[test]
+    fn test_build_all_filter() {
+        let filters = vec![Filter {
+            field: "tags".into(),
+            operator: FilterOperator::All,
+            value: serde_json::json!(["rust", "mongodb"]),
+        }];
+        let doc = build_and_filter(&filters).unwrap();
+        let cond = doc.get_document("tags").unwrap();
+        assert!(cond.contains_key("$all"));
+    }
+
+    #[test]
+    fn test_build_size_filter() {
+        let filters = vec![Filter {
+            field: "items".into(),
+            operator: FilterOperator::Size,
+            value: serde_json::json!(3),
+        }];
+        let doc = build_and_filter(&filters).unwrap();
+        let cond = doc.get_document("items").unwrap();
+        assert_eq!(cond.get_i64("$size").unwrap(), 3);
+    }
+
+    #[test]
+    fn test_build_type_filter() {
+        let filters = vec![Filter {
+            field: "age".into(),
+            operator: FilterOperator::Type,
+            value: serde_json::json!("number"),
+        }];
+        let doc = build_and_filter(&filters).unwrap();
+        let cond = doc.get_document("age").unwrap();
+        assert_eq!(cond.get_str("$type").unwrap(), "number");
+    }
+
+    // ── $or, $text, $expr via build_filter ─────────────────────
+
+    #[test]
+    fn test_build_or_filter() {
+        let query = ParsedQuery {
+            collection: "orders".into(),
+            or_filters: vec![
+                vec![Filter {
+                    field: "status".into(),
+                    operator: FilterOperator::Eq,
+                    value: serde_json::json!("pending"),
+                }],
+                vec![Filter {
+                    field: "status".into(),
+                    operator: FilterOperator::Eq,
+                    value: serde_json::json!("shipped"),
+                }],
+            ],
+            ..Default::default()
+        };
+        let doc = build_filter(&query).unwrap();
+        let or_arr = doc.get_array("$or").unwrap();
+        assert_eq!(or_arr.len(), 2);
+    }
+
+    #[test]
+    fn test_build_text_filter() {
+        let query = ParsedQuery {
+            collection: "articles".into(),
+            text_search: Some("mongodb tutorial".into()),
+            ..Default::default()
+        };
+        let doc = build_filter(&query).unwrap();
+        let text_doc = doc.get_document("$text").unwrap();
+        assert_eq!(text_doc.get_str("$search").unwrap(), "mongodb tutorial");
+    }
+
+    #[test]
+    fn test_build_expr_filter() {
+        let query = ParsedQuery {
+            collection: "orders".into(),
+            expr: Some(serde_json::json!({"$gt": ["$total", "$budget"]})),
+            ..Default::default()
+        };
+        let doc = build_filter(&query).unwrap();
+        assert!(doc.contains_key("$expr"));
+    }
+
+    // ── Aggregate pipeline building ────────────────────────────
+
+    #[test]
+    fn test_build_group_pipeline() {
+        use crate::domain::models::{GroupSpec, Accumulator};
+        let query = ParsedQuery {
+            collection: "orders".into(),
+            operation: QueryOperation::Aggregate,
+            group_by: Some(GroupSpec {
+                field: "customer_id".into(),
+                accumulators: vec![Accumulator {
+                    output_field: "total".into(),
+                    operator: "$sum".into(),
+                    input_field: "amount".into(),
+                }],
+            }),
+            ..Default::default()
+        };
+        let filter = build_filter(&query).unwrap();
+        let pipeline = build_aggregate_pipeline(&query, &filter).unwrap();
+        // Should have $group + $limit stages (no $match since no filters)
+        assert!(pipeline.iter().any(|s| s.contains_key("$group")));
+        assert!(pipeline.iter().any(|s| s.contains_key("$limit")));
+
+        let group_stage = pipeline.iter().find(|s| s.contains_key("$group")).unwrap();
+        let group_doc = group_stage.get_document("$group").unwrap();
+        assert_eq!(group_doc.get_str("_id").unwrap(), "$customer_id");
+        let total = group_doc.get_document("total").unwrap();
+        assert_eq!(total.get_str("$sum").unwrap(), "$amount");
+    }
+
+    #[test]
+    fn test_build_lookup_pipeline() {
+        use crate::domain::models::LookupSpec;
+        let query = ParsedQuery {
+            collection: "orders".into(),
+            operation: QueryOperation::Aggregate,
+            lookup: Some(LookupSpec {
+                from: "customers".into(),
+                local_field: "customer_id".into(),
+                foreign_field: "_id".into(),
+                as_field: "customer".into(),
+            }),
+            ..Default::default()
+        };
+        let filter = build_filter(&query).unwrap();
+        let pipeline = build_aggregate_pipeline(&query, &filter).unwrap();
+        assert!(pipeline.iter().any(|s| s.contains_key("$lookup")));
+    }
+
+    #[test]
+    fn test_build_unwind_pipeline() {
+        let query = ParsedQuery {
+            collection: "orders".into(),
+            operation: QueryOperation::Aggregate,
+            unwind: Some("items".into()),
+            ..Default::default()
+        };
+        let filter = build_filter(&query).unwrap();
+        let pipeline = build_aggregate_pipeline(&query, &filter).unwrap();
+        let unwind_stage = pipeline.iter().find(|s| s.contains_key("$unwind")).unwrap();
+        assert_eq!(unwind_stage.get_str("$unwind").unwrap(), "$items");
+    }
+
+    #[test]
+    fn test_build_bucket_pipeline() {
+        use crate::domain::models::BucketSpec;
+        let query = ParsedQuery {
+            collection: "products".into(),
+            operation: QueryOperation::Aggregate,
+            bucket: Some(BucketSpec {
+                group_by: "price".into(),
+                boundaries: vec![
+                    serde_json::json!(0),
+                    serde_json::json!(50),
+                    serde_json::json!(100),
+                    serde_json::json!(500),
+                ],
+                default_bucket: Some("Other".into()),
+            }),
+            ..Default::default()
+        };
+        let filter = build_filter(&query).unwrap();
+        let pipeline = build_aggregate_pipeline(&query, &filter).unwrap();
+        assert!(pipeline.iter().any(|s| s.contains_key("$bucket")));
+    }
+
+    #[test]
+    fn test_build_full_pipeline() {
+        use crate::domain::models::{GroupSpec, Accumulator, LookupSpec, SortSpec};
+        let query = ParsedQuery {
+            collection: "orders".into(),
+            operation: QueryOperation::Aggregate,
+            filters: vec![Filter {
+                field: "status".into(),
+                operator: FilterOperator::Eq,
+                value: serde_json::json!("completed"),
+            }],
+            lookup: Some(LookupSpec {
+                from: "customers".into(),
+                local_field: "customer_id".into(),
+                foreign_field: "_id".into(),
+                as_field: "customer".into(),
+            }),
+            unwind: Some("items".into()),
+            group_by: Some(GroupSpec {
+                field: "customer_id".into(),
+                accumulators: vec![Accumulator {
+                    output_field: "count".into(),
+                    operator: "$sum".into(),
+                    input_field: "1".into(),
+                }],
+            }),
+            sort: Some(SortSpec { field: "count".into(), order: -1 }),
+            limit: 10,
+            ..Default::default()
+        };
+        let filter = build_filter(&query).unwrap();
+        let pipeline = build_aggregate_pipeline(&query, &filter).unwrap();
+        // Pipeline order: $match, $lookup, $unwind, $group, $sort, $limit
+        let stage_keys: Vec<String> = pipeline.iter()
+            .flat_map(|d| d.keys().map(|k| k.to_string()))
+            .collect();
+        assert!(stage_keys.contains(&"$match".to_string()));
+        assert!(stage_keys.contains(&"$lookup".to_string()));
+        assert!(stage_keys.contains(&"$unwind".to_string()));
+        assert!(stage_keys.contains(&"$group".to_string()));
+        assert!(stage_keys.contains(&"$sort".to_string()));
+        assert!(stage_keys.contains(&"$limit".to_string()));
+    }
+
+    #[test]
+    fn test_invalid_accumulator_rejected() {
+        let result = build_accumulator_expr("$evil", "amount");
+        assert!(result.is_err());
     }
 }

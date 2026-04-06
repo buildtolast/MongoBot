@@ -64,7 +64,7 @@ pub async fn handle_query(
         let (preview_results, preview_count) = if parsed.operation == crate::domain::models::QueryOperation::Update
             || parsed.operation == crate::domain::models::QueryOperation::Delete
         {
-            let filter = executor::build_filter(&parsed.filters)?;
+            let filter = executor::build_filter(&parsed)?;
             match state.mongo.find_documents(
                 &parsed.collection, Some(filter), None, Some(100), None,
             ).await {
