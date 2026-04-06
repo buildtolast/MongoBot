@@ -323,7 +323,9 @@ JSON format (REQUIRED fields: collection, operation, filters, limit):
   "group_by": {{"field": "category", "accumulators": [{{"output_field": "total", "operator": "$sum", "input_field": "amount"}}]}},
   "lookup": {{"from": "other_collection", "local_field": "fk", "foreign_field": "_id", "as_field": "joined"}},
   "unwind": "array_field",
-  "bucket": {{"group_by": "price", "boundaries": [0, 50, 100, 500]}}
+  "bucket": {{"group_by": "price", "boundaries": [0, 50, 100, 500]}},
+  "raw_pipeline": [{{"$match": {{}}}}, {{"$group": {{}}}}, ...],
+  "raw_filter": {{"$or": [{{"status": "A"}}, {{"age": {{"$gt": 25}}}}]}}
 }}
 
 Rules:
@@ -343,6 +345,9 @@ Rules:
 - For array contains all: use operator "all" with array value.
 - Prefer indexed fields for filters/sort.
 - For array fields use dot notation (e.g. "transactions.symbol").
+- For complex aggregations: use "raw_pipeline" with native MongoDB aggregate pipeline stages. Each element is a stage object like {{"$match": ...}}, {{"$group": ...}}, {{"$sort": ...}}. raw_pipeline takes priority over group_by/lookup/unwind/bucket when present.
+- For complex filter logic (nested $or/$and, $elemMatch with multiple conditions): use "raw_filter" with native MongoDB filter syntax. raw_filter takes priority over filters/or_filters when present.
+- NEVER use $out, $merge, $function, $accumulator, or $where in raw_pipeline or raw_filter.
 
 Query: {query}"#
     )
@@ -456,6 +461,13 @@ pub(crate) fn parse_llm_response(raw: &str) -> Result<ParsedQuery, AppError> {
     let text_search = obj.get("text_search").and_then(|v| v.as_str()).map(String::from);
     let expr = obj.get("expr").cloned();
 
+    let raw_pipeline = obj.get("raw_pipeline")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.to_vec());
+
+    let raw_filter = obj.get("raw_filter").cloned()
+        .filter(|v| v.is_object());
+
     Ok(crate::domain::models::ParsedQuery {
         collection,
         operation,
@@ -475,6 +487,8 @@ pub(crate) fn parse_llm_response(raw: &str) -> Result<ParsedQuery, AppError> {
         or_filters,
         text_search,
         expr,
+        raw_pipeline,
+        raw_filter,
     })
 }
 
@@ -699,5 +713,39 @@ mod tests {
         assert_eq!(parse_filter_operator("$all"), crate::domain::models::FilterOperator::All);
         assert_eq!(parse_filter_operator("$size"), crate::domain::models::FilterOperator::Size);
         assert_eq!(parse_filter_operator("type"), crate::domain::models::FilterOperator::Type);
+    }
+
+    #[test]
+    fn test_parse_response_with_raw_pipeline() {
+        let json = r#"{
+            "collection": "orders",
+            "operation": "aggregate",
+            "filters": [],
+            "limit": 100,
+            "raw_pipeline": [
+                {"$match": {"status": "active"}},
+                {"$group": {"_id": "$category", "count": {"$sum": 1}}},
+                {"$sort": {"count": -1}}
+            ]
+        }"#;
+        let parsed = parse_llm_response(json).unwrap();
+        let pipeline = parsed.raw_pipeline.unwrap();
+        assert_eq!(pipeline.len(), 3);
+        assert!(pipeline[0].get("$match").is_some());
+        assert!(pipeline[1].get("$group").is_some());
+    }
+
+    #[test]
+    fn test_parse_response_with_raw_filter() {
+        let json = r#"{
+            "collection": "users",
+            "operation": "find",
+            "filters": [],
+            "limit": 100,
+            "raw_filter": {"$or": [{"status": "active"}, {"role": "admin"}]}
+        }"#;
+        let parsed = parse_llm_response(json).unwrap();
+        let raw = parsed.raw_filter.unwrap();
+        assert!(raw.get("$or").is_some());
     }
 }

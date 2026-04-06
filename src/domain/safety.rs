@@ -108,6 +108,16 @@ impl SafetyChecker {
             check_expr_safety(expr)?;
         }
 
+        // 3e. Validate raw pipeline stages
+        if let Some(ref stages) = query.raw_pipeline {
+            validate_raw_pipeline(stages)?;
+        }
+
+        // 3f. Validate raw filter document
+        if let Some(ref filter) = query.raw_filter {
+            validate_raw_filter(filter)?;
+        }
+
         // 4. Validate write-specific safety rules
         match query.operation {
             crate::domain::models::QueryOperation::Insert => {
@@ -227,6 +237,126 @@ fn field_matches(field: &str, known: &[&str]) -> bool {
 
     // _id is always valid
     field == "_id"
+}
+
+/// Validate raw aggregate pipeline stages for dangerous operators.
+fn validate_raw_pipeline(stages: &[serde_json::Value]) -> Result<(), SafetyError> {
+    const BLOCKED_STAGES: &[&str] = &[
+        "$out", "$merge", "$function", "$accumulator", "$where",
+        "$indexStats", "$collStats", "$planCacheStats", "$currentOp",
+    ];
+
+    for stage in stages {
+        let obj = stage.as_object().ok_or_else(|| {
+            SafetyError::InjectionDetected("Pipeline stage must be an object".into())
+        })?;
+
+        // Check the stage operator key
+        for key in obj.keys() {
+            let lower = key.to_lowercase();
+            for blocked in BLOCKED_STAGES {
+                if lower == blocked.to_lowercase() {
+                    return Err(SafetyError::InjectionDetected(format!(
+                        "Pipeline stage '{}' is not allowed", key
+                    )));
+                }
+            }
+        }
+
+        // Recursively scan values for dangerous patterns
+        scan_value_for_injection(stage)?;
+    }
+
+    Ok(())
+}
+
+/// Validate a raw MongoDB filter document for dangerous operators.
+fn validate_raw_filter(filter: &serde_json::Value) -> Result<(), SafetyError> {
+    const BLOCKED_OPERATORS: &[&str] = &[
+        "$where", "$function", "$accumulator",
+    ];
+
+    const ALLOWED_OPERATORS: &[&str] = &[
+        "$and", "$or", "$nor", "$not",
+        "$gt", "$gte", "$lt", "$lte", "$eq", "$ne",
+        "$in", "$nin", "$exists", "$type", "$size", "$all",
+        "$elemMatch", "$regex", "$options", "$text", "$search",
+        "$expr",
+    ];
+
+    scan_filter_keys(filter, BLOCKED_OPERATORS, ALLOWED_OPERATORS)?;
+    Ok(())
+}
+
+/// Recursively scan a JSON value for dangerous string patterns in keys.
+fn scan_value_for_injection(val: &serde_json::Value) -> Result<(), SafetyError> {
+    const DANGEROUS: &[&str] = &["$where", "$function", "$accumulator"];
+
+    match val {
+        serde_json::Value::Object(map) => {
+            for (key, child) in map {
+                let lower = key.to_lowercase();
+                for pattern in DANGEROUS {
+                    if lower == pattern.to_lowercase() {
+                        return Err(SafetyError::InjectionDetected(format!(
+                            "Dangerous operator '{}' in pipeline", key
+                        )));
+                    }
+                }
+                scan_value_for_injection(child)?;
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for item in arr {
+                scan_value_for_injection(item)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Recursively scan filter keys, blocking dangerous operators and validating $ operators.
+fn scan_filter_keys(
+    val: &serde_json::Value,
+    blocked: &[&str],
+    allowed: &[&str],
+) -> Result<(), SafetyError> {
+    match val {
+        serde_json::Value::Object(map) => {
+            for (key, child) in map {
+                if key.starts_with('$') {
+                    // Check if blocked
+                    let lower = key.to_lowercase();
+                    for b in blocked {
+                        if lower == b.to_lowercase() {
+                            return Err(SafetyError::InjectionDetected(format!(
+                                "Operator '{}' is not allowed in filters", key
+                            )));
+                        }
+                    }
+                    // Check if known — unknown $ operators are suspicious
+                    if !allowed.contains(&key.as_str()) {
+                        return Err(SafetyError::InjectionDetected(format!(
+                            "Unknown operator '{}' in filter", key
+                        )));
+                    }
+                    // Special: $expr must pass safety check
+                    if key == "$expr" {
+                        check_expr_safety(child)?;
+                    }
+                }
+                scan_filter_keys(child, blocked, allowed)?;
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for item in arr {
+                scan_filter_keys(item, blocked, allowed)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 /// Check a field name for potential injection patterns.
@@ -556,5 +686,56 @@ mod tests {
             ..Default::default()
         };
         assert!(checker.validate(&query, None).is_err());
+    }
+
+    // ── Raw pipeline validation ─────────────────────────────────
+
+    #[test]
+    fn test_raw_pipeline_blocks_out() {
+        let stages = vec![serde_json::json!({"$out": "evil_collection"})];
+        assert!(validate_raw_pipeline(&stages).is_err());
+    }
+
+    #[test]
+    fn test_raw_pipeline_blocks_merge() {
+        let stages = vec![serde_json::json!({"$merge": {"into": "target"}})];
+        assert!(validate_raw_pipeline(&stages).is_err());
+    }
+
+    #[test]
+    fn test_raw_pipeline_blocks_function() {
+        let stages = vec![serde_json::json!({
+            "$addFields": {"result": {"$function": {"body": "return 1", "args": [], "lang": "js"}}}
+        })];
+        assert!(validate_raw_pipeline(&stages).is_err());
+    }
+
+    #[test]
+    fn test_raw_pipeline_allows_safe_stages() {
+        let stages = vec![
+            serde_json::json!({"$match": {"status": "active"}}),
+            serde_json::json!({"$group": {"_id": "$category", "count": {"$sum": 1}}}),
+            serde_json::json!({"$sort": {"count": -1}}),
+        ];
+        assert!(validate_raw_pipeline(&stages).is_ok());
+    }
+
+    // ── Raw filter validation ───────────────────────────────────
+
+    #[test]
+    fn test_raw_filter_blocks_where() {
+        let filter = serde_json::json!({"$where": "this.a > this.b"});
+        assert!(validate_raw_filter(&filter).is_err());
+    }
+
+    #[test]
+    fn test_raw_filter_allows_complex_or() {
+        let filter = serde_json::json!({
+            "$or": [
+                {"status": "active", "age": {"$gt": 25}},
+                {"$and": [{"role": "admin"}, {"verified": true}]}
+            ]
+        });
+        assert!(validate_raw_filter(&filter).is_ok());
     }
 }

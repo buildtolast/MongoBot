@@ -65,6 +65,7 @@ pub fn analyze_query(
     check_unwind_warning(query, &mut advice);
     check_or_query(query, &mut advice);
     check_group_high_cardinality(query, &mut advice);
+    check_raw_passthrough(query, &mut advice);
 
     advice
 }
@@ -530,6 +531,24 @@ fn check_group_high_cardinality(query: &ParsedQuery, advice: &mut Vec<QueryAdvic
                  Did you mean to group by a different field?",
             ));
         }
+    }
+}
+
+/// Info when raw pipeline or raw filter is used — structured validation is limited.
+fn check_raw_passthrough(query: &ParsedQuery, advice: &mut Vec<QueryAdvice>) {
+    if query.raw_pipeline.is_some() {
+        advice.push(QueryAdvice::info(
+            "RAW_PIPELINE_USED",
+            "Query uses a raw aggregate pipeline — structured field validation is limited. \
+             Review the pipeline stages manually for correctness.",
+        ));
+    }
+    if query.raw_filter.is_some() {
+        advice.push(QueryAdvice::info(
+            "RAW_FILTER_USED",
+            "Query uses a raw filter document — structured field validation is limited. \
+             Review the filter for correctness.",
+        ));
     }
 }
 

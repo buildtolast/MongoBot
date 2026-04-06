@@ -73,6 +73,16 @@ pub struct ParsedQuery {
     /// Cross-field comparison ($expr). Raw JSON value.
     #[serde(default)]
     pub expr: Option<serde_json::Value>,
+
+    /// Native MongoDB aggregate pipeline stages. When present, takes priority over
+    /// structured fields (group_by, lookup, unwind, etc.) in the executor.
+    #[serde(default)]
+    pub raw_pipeline: Option<Vec<serde_json::Value>>,
+
+    /// Native MongoDB filter document. When present, takes priority over structured
+    /// filters/or_filters/text_search/expr in the executor.
+    #[serde(default)]
+    pub raw_filter: Option<serde_json::Value>,
 }
 
 fn default_limit() -> usize {
@@ -100,6 +110,8 @@ impl Default for ParsedQuery {
             or_filters: vec![],
             text_search: None,
             expr: None,
+            raw_pipeline: None,
+            raw_filter: None,
         }
     }
 }

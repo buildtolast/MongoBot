@@ -91,7 +91,17 @@ pub async fn execute(pool: &MongoPool, query: &ParsedQuery) -> Result<QueryResul
         }
 
         QueryOperation::Aggregate => {
-            let pipeline = build_aggregate_pipeline(query, &filter)?;
+            // Raw pipeline takes priority — passthrough native stages
+            let pipeline = if let Some(ref raw_stages) = query.raw_pipeline {
+                raw_stages.iter()
+                    .map(|s| match json_to_bson(s)? {
+                        Bson::Document(d) => Ok(d),
+                        _ => Err(AppError::Validation("Pipeline stage must be an object".into())),
+                    })
+                    .collect::<Result<Vec<Document>, AppError>>()?
+            } else {
+                build_aggregate_pipeline(query, &filter)?
+            };
 
             let coll = pool.collection(&query.collection);
             let mut cursor = coll.aggregate(pipeline).await?;
@@ -211,6 +221,14 @@ fn build_single_condition(filter: &Filter) -> Result<Bson, AppError> {
 
 /// Build a complete BSON filter document from a ParsedQuery, including $or, $text, and $expr.
 pub(crate) fn build_filter(query: &ParsedQuery) -> Result<Document, AppError> {
+    // Raw filter takes priority — passthrough native MongoDB filter syntax
+    if let Some(ref raw) = query.raw_filter {
+        return match json_to_bson(raw)? {
+            Bson::Document(d) => Ok(d),
+            _ => Err(AppError::Validation("raw_filter must be a JSON object".into())),
+        };
+    }
+
     let mut doc = build_and_filter(&query.filters)?;
 
     // $or conditions
@@ -549,6 +567,14 @@ pub fn build_mongo_shell_command(query: &ParsedQuery) -> String {
             format!("db.{}.distinct(\"{}\", {})", query.collection, field, filter_str)
         }
         QueryOperation::Aggregate => {
+            // Raw pipeline: render stages directly
+            if let Some(ref raw_stages) = query.raw_pipeline {
+                let stages: Vec<String> = raw_stages.iter()
+                    .map(|s| serde_json::to_string(s).unwrap_or_else(|_| "{}".to_string()))
+                    .collect();
+                return format!("db.{}.aggregate([\n  {}\n])", query.collection, stages.join(",\n  "));
+            }
+
             let mut stages = Vec::new();
 
             if !filter.is_empty() {
@@ -1189,5 +1215,59 @@ mod tests {
     fn test_invalid_accumulator_rejected() {
         let result = build_accumulator_expr("$evil", "amount");
         assert!(result.is_err());
+    }
+
+    // ── Raw passthrough ────────────────────────────────────────
+
+    #[test]
+    fn test_raw_filter_takes_priority() {
+        let query = ParsedQuery {
+            collection: "orders".into(),
+            filters: vec![Filter {
+                field: "status".into(),
+                operator: FilterOperator::Eq,
+                value: serde_json::json!("active"),
+            }],
+            raw_filter: Some(serde_json::json!({
+                "$or": [{"status": "pending"}, {"status": "shipped"}]
+            })),
+            ..Default::default()
+        };
+        let doc = build_filter(&query).unwrap();
+        // raw_filter should win — should have $or, not status: "active"
+        assert!(doc.contains_key("$or"));
+        assert!(!doc.contains_key("status"));
+    }
+
+    #[test]
+    fn test_structured_fallback_when_no_raw() {
+        let query = ParsedQuery {
+            collection: "orders".into(),
+            filters: vec![Filter {
+                field: "status".into(),
+                operator: FilterOperator::Eq,
+                value: serde_json::json!("active"),
+            }],
+            ..Default::default()
+        };
+        let doc = build_filter(&query).unwrap();
+        assert_eq!(doc.get_str("status").unwrap(), "active");
+    }
+
+    #[test]
+    fn test_raw_pipeline_shell_command() {
+        let query = ParsedQuery {
+            collection: "orders".into(),
+            operation: QueryOperation::Aggregate,
+            raw_pipeline: Some(vec![
+                serde_json::json!({"$match": {"status": "active"}}),
+                serde_json::json!({"$group": {"_id": "$category", "count": {"$sum": 1}}}),
+            ]),
+            ..Default::default()
+        };
+        let cmd = build_mongo_shell_command(&query);
+        assert!(cmd.contains("db.orders.aggregate"));
+        assert!(cmd.contains("$match"));
+        assert!(cmd.contains("$group"));
     }
 }
