@@ -1,6 +1,6 @@
 # Slack-Mongo Query Bot
 
-NL-to-MongoDB query bot with Web UI and Slack integration. Ask questions in plain English, get structured MongoDB query results. 4 LLM providers, 72 unit tests, 25+ commits of iteration.
+NL-to-MongoDB query bot with Web UI and Slack integration. Ask questions in plain English, get structured MongoDB query results. Full aggregate pipeline support, 4 LLM providers, 101 unit tests, 30+ commits of iteration.
 
 <!-- screenshot -->
 
@@ -27,12 +27,14 @@ cargo run -- --mongo-db-name movies
 
 **Query & Execution:**
 - Natural language query bar -- type questions like "find active users from last week"
-- Query Advisor with 14 validation rules (unbounded queries, missing indexes, $ne/$nin warnings, etc.)
+- Full aggregate pipeline: `$group`, `$lookup`, `$unwind`, `$bucket`, `$facet` stages
+- Filter operators: `$or`, `$exists`, `$all`, `$size`, `$type`, `$text`, `$expr` (cross-field comparisons)
+- Query Advisor with 21 validation rules (unbounded queries, missing indexes, aggregate warnings, etc.)
 - Approval toggle -- preview parsed queries before execution (preview mode)
-- Editable query: modify the parsed JSON before execution in approval mode
+- Editable query: modify the parsed JSON before execution in approval mode (edits applied to reads + writes)
 - CRUD support: insert and update operations with confirmation dialog + backup download
 - Abort button for canceling in-progress queries
-- MongoDB query viewer panel showing actual shell commands
+- MongoDB query viewer panel showing actual shell commands (includes pipeline stages)
 - Index analysis showing which indexes are used per query
 - Date auto-conversion (ISO strings, year numbers automatically converted to BSON DateTime)
 - `$elemMatch` for array element queries (auto-grouped in executor)
@@ -87,13 +89,13 @@ All settings can be set via environment variables or CLI flags. Copy `.env.examp
 | `HOST` | `0.0.0.0` | Server bind host |
 | `PORT` | `3000` | HTTP server port |
 | `MAX_RESULT_ROWS` | `10000` | Maximum documents returned per query |
-| `ALLOWED_OPERATIONS` | `find,count,distinct,aggregate,insert,update` | Comma-separated operation whitelist |
+| `ALLOWED_OPERATIONS` | `find,count,distinct,aggregate,insert,update` | Comma-separated operation whitelist (add `delete` to enable) |
 
 Slack configuration is optional. The web UI works standalone without it.
 
 ## Architecture
 
-The server is built on actix-web 4 (with actix-cors for CORS preflight handling) and an embedded vanilla JS/HTML frontend assembled at compile time via `build.rs` (single binary, no Node.js). Natural language queries are parsed by one of 4 LLM providers (Ollama default, LM Studio, Anthropic Claude, OpenAI GPT), validated by a safety checker and query advisor (14 rules), and executed against MongoDB. Both the Web UI and Slack bot share the same query processing pipeline. Default model: `qwen3-coder:30b` (recommended), `qwen3:8b` (fast alternative).
+The server is built on actix-web 4 (with actix-cors for CORS preflight handling) and an embedded vanilla JS/HTML frontend assembled at compile time via `build.rs` (single binary, no Node.js). Natural language queries are parsed by one of 4 LLM providers (Ollama default, LM Studio, Anthropic Claude, OpenAI GPT), validated by a safety checker and query advisor (21 rules), and executed against MongoDB. Full aggregate pipeline support (`$group`, `$lookup`, `$unwind`, `$bucket`, `$facet`) with structured type-safe models. Both the Web UI and Slack bot share the same query processing pipeline. Default model: `qwen3-coder:30b` (recommended), `qwen3:8b` (fast alternative).
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed diagrams, data flows, and design decisions.
 
@@ -130,6 +132,71 @@ src/
 docs/               -- mongodb_query_reference.md, query_audit_report.md
 tests/              -- integration tests
 ```
+
+## Changelog
+
+### v0.4.0: Full Aggregate Pipeline + Missing Operators (2026-04-05)
+
+- [x] **Aggregate `$group` stage** — GROUP BY with accumulators (`$sum`, `$avg`, `$min`, `$max`, `$first`, `$last`, `$push`, `$addToSet`, `$count`)
+- [x] **Aggregate `$lookup` stage** — cross-collection joins with foreign key matching
+- [x] **Aggregate `$unwind` stage** — flatten array fields into separate documents
+- [x] **Aggregate `$bucket` stage** — range grouping with configurable boundaries
+- [x] **Aggregate `$facet` stage** — parallel sub-pipelines (raw JSON passthrough)
+- [x] **Full pipeline builder** — assembles stages in correct order: `$match` → `$lookup` → `$unwind` → `$group` → `$bucket` → `$facet` → `$sort` → `$limit` → `$project`
+- [x] **`$or` operator** — logical OR conditions across multiple filter branches
+- [x] **`$exists` operator** — check if a field is present in documents
+- [x] **`$all` operator** — match arrays containing all specified values
+- [x] **`$size` operator** — match arrays with exact length
+- [x] **`$type` operator** — filter by BSON data type
+- [x] **`$text` operator** — full-text search via `text_search` field
+- [x] **`$expr` operator** — safe cross-field comparisons (e.g. `total > budget`)
+- [x] **Accumulator whitelist** — safety checker validates `$group` accumulator operators
+- [x] **`$expr` safety validation** — only allows simple comparisons, blocks `$function`/`$accumulator`
+- [x] **5 new query advisor rules** — `AGGREGATE_NO_MATCH`, `LOOKUP_PERF`, `UNWIND_ARRAY`, `OR_QUERY`, `GROUP_HIGH_CARDINALITY`
+- [x] **LLM prompt expanded** — all new operators, pipeline stages, `update_many`/`delete_many` guidance
+- [x] **Resilient parser updated** — extracts `group_by`, `lookup`, `unwind`, `facet`, `bucket`, `or_filters`, `text_search`, `expr` from LLM output
+- [x] **Shell command display** — `build_mongo_shell_command()` renders all new pipeline stages
+- [x] **Fix: editable query now works for reads** — approved read queries use the edited parsed JSON via `/api/execute` instead of re-querying the LLM
+- [x] **`/api/execute` returns full diagnostics** — index analysis + query advice for all operations, not just writes
+- [x] **29 new unit tests** (72 → 101 total), all 37 integration tests pass
+- [x] **Backward compatible** — all new `ParsedQuery` fields use `#[serde(default)]`, existing queries unaffected
+
+### v0.3.0: Multi-Provider LLM + UI Polish (2026-04-04)
+
+- [x] 4 LLM providers: Ollama (default), LM Studio, Anthropic Claude, OpenAI GPT
+- [x] Shared `call_openai_compatible()` for OpenAI/LM Studio (same API format)
+- [x] Settings panel: gear icon, `/api/config` endpoint (secrets redacted), modal with grouped config
+- [x] Editable query: contentEditable parsed JSON + mongo command in approval mode
+- [x] 7 themes: Dark (default), Dim, Light, Nord, Midnight, Warm, Solarized
+- [x] Theme selector dropdown in top bar, persists to localStorage
+- [x] UI polish: gradient logo, colored export buttons, accent gear icon, example query pills
+
+### v0.2.0: Query Intelligence + CRUD (2026-04-03/04)
+
+- [x] Query Advisor: 14 validation rules (unbounded, limit, projection, regex, $ne/$nin, case, index, write safety)
+- [x] Approval toggle: preview mode with approve/reject flow
+- [x] CRUD: insert + update with confirmation + mandatory backup download
+- [x] `$elemMatch` auto-grouping for multi-condition array queries
+- [x] Same-field filter merging for range queries
+- [x] Date auto-conversion: ISO strings + year numbers → BSON DateTime
+- [x] Runtime schema discovery: introspects all MongoDB collections
+- [x] Live model selection: `/api/models` + per-query model override
+- [x] 37 Rust integration tests (configurable model via `TEST_MODEL`)
+- [x] MongoDB query reference docs (35KB) + audit report
+
+### v0.1.1: Bug Fixes + Movies DB (2026-04-02/03)
+
+- [x] Replaced ollama-rs with direct HTTP via reqwest
+- [x] Added actix-cors for CORS preflight handling
+- [x] Fixed frontend field mismatches, spinner, CORS preflight
+- [x] Switched to movies DB with sample data
+
+### v0.1.0: Initial Implementation (2026-04-01)
+
+- [x] Full project scaffold: actix-web 4, 43 source files, 7 modules
+- [x] Ollama LLM integration, MongoDB execution, safety checker
+- [x] Dark-themed embedded Web UI, CSV/JSON export, Slack handlers
+- [x] run.sh, Docker, 40 unit tests
 
 ## License
 

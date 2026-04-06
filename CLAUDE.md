@@ -1,7 +1,7 @@
 # SlackMongoBot — CLAUDE.md
 
 ## Project Overview
-NL-to-MongoDB query bot with Web UI and Slack integration. Actix-web backend with embedded vanilla JS/HTML frontend. 4 LLM providers: Ollama (default), LM Studio, Anthropic Claude, OpenAI GPT. NL parsing via direct HTTP calls (reqwest). Single binary deployment. Default database: `movies` (14+ collections auto-discovered via runtime introspection). 72 unit tests, 22 source files, 17 frontend files.
+NL-to-MongoDB query bot with Web UI and Slack integration. Actix-web backend with embedded vanilla JS/HTML frontend. 4 LLM providers: Ollama (default), LM Studio, Anthropic Claude, OpenAI GPT. NL parsing via direct HTTP calls (reqwest). Single binary deployment. Default database: `movies` (14+ collections auto-discovered via runtime introspection). Full aggregate pipeline support ($group, $lookup, $unwind, $bucket, $facet). 101 unit tests, 22 source files, 17 frontend files.
 
 ## Build & Run
 ```bash
@@ -39,9 +39,11 @@ build.rs            — assembles frontend into $OUT_DIR/index.html
 - Frontend: `build.rs` assembles shell HTML + CSS + JS into `$OUT_DIR/index.html`, embedded via `include_str!()`
 - Error handling: `thiserror` + sanitized HTTP responses (internal errors logged, safe messages sent to client)
 - LLM: 4 providers — Ollama (default), LM Studio (OpenAI-compatible), Anthropic Claude, OpenAI GPT. LM Studio and OpenAI share `call_openai_compatible()` implementation
-- Safety: field whitelist from schema, operation whitelist, injection detection
-- Query Advisor: `domain/query_advisor.rs` — 14 validation rules (unbounded, missing index, $ne/$nin, regex, etc.)
-- Preview mode: approval toggle in UI; `POST /api/query` with `preview: true` returns parsed query without executing; user can edit the parsed JSON before confirming; `POST /api/execute` confirms
+- Safety: field whitelist from schema, operation whitelist, injection detection, $expr safety validation, accumulator whitelist
+- Query Advisor: `domain/query_advisor.rs` — 21 validation rules (unbounded, missing index, $ne/$nin, regex, aggregate, lookup, $or, etc.)
+- Aggregate pipeline: `ParsedQuery` has typed fields for `group_by`, `lookup`, `unwind`, `bucket`, `facet`. Executor builds full pipeline in order: `$match` → `$lookup` → `$unwind` → `$group` → `$bucket` → `$facet` → `$sort` → `$limit` → `$project`
+- Filter operators: `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `in`, `nin`, `contains`, `regex`, `exists`, `all`, `size`, `type`. Plus `$or` (via `or_filters`), `$text` (via `text_search`), `$expr` (via `expr`)
+- Preview mode: approval toggle in UI; `POST /api/query` with `preview: true` returns parsed query without executing; user can edit the parsed JSON before confirming; `POST /api/execute` executes the edited query for both reads and writes
 - Settings panel: gear icon opens modal showing all env config with secrets redacted (via `GET /api/config`)
 - Date coercion: `coerce_value_for_field()` and `try_parse_datetime()` in executor — ISO strings and year numbers auto-converted to BSON DateTime
 - `$elemMatch`: array element sub-field filters auto-wrapped in `$elemMatch` by executor
@@ -72,7 +74,7 @@ build.rs            — assembles frontend into $OUT_DIR/index.html
 - `GET /api/version` — build metadata
 - `GET /api/config` — current configuration with secrets redacted (LLM, MongoDB, server, safety, Slack sections)
 - `POST /api/query` — NL query (supports `preview: true` for approval mode + editable query)
-- `POST /api/execute` — execute a confirmed query (CRUD flow)
+- `POST /api/execute` — execute a confirmed query (reads + writes, accepts edited ParsedQuery)
 - `GET /api/export` — CSV/JSON file download
 - `GET /api/schemas` — list collection schemas
 - `POST /api/schemas/refresh` — re-introspect MongoDB collections
@@ -91,7 +93,8 @@ build.rs            — assembles frontend into $OUT_DIR/index.html
 
 ## Testing
 ```bash
-cargo test                     # all 72 tests
+cargo test                     # all 101 unit + 37 integration tests
+cargo test --lib               # unit tests only (fast, no server needed)
 cargo test config              # filter by name
 cargo test -- --nocapture      # show stdout
 ```
