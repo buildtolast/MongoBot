@@ -341,8 +341,9 @@ fn check_contains_on_large_field(query: &ParsedQuery, advice: &mut Vec<QueryAdvi
     }
 }
 
-/// Info when multiple filters target fields under the same array prefix,
-/// indicating $elemMatch will be used (which users should be aware of).
+/// Info when multiple filters target fields under the same dotted prefix.
+/// For array fields, the user may need $elemMatch (via raw_filter) for
+/// same-element matching. For nested objects, dot notation works correctly.
 fn check_multiple_array_filters(query: &ParsedQuery, advice: &mut Vec<QueryAdvice>) {
     let mut prefix_counts: std::collections::HashMap<&str, usize> =
         std::collections::HashMap::new();
@@ -357,12 +358,11 @@ fn check_multiple_array_filters(query: &ParsedQuery, advice: &mut Vec<QueryAdvic
     for (prefix, count) in &prefix_counts {
         if *count >= 2 {
             advice.push(QueryAdvice::info(
-                "ELEMMATCH_USED",
+                "DOTTED_PREFIX_GROUP",
                 format!(
-                    "Multiple filters on array '{}' ({} conditions) will use \
-                     $elemMatch to match on the same array element. Verify this \
-                     is the intended behavior.",
-                    prefix, count
+                    "Multiple filters on '{prefix}.*' ({count} conditions) use dot notation. \
+                     If '{prefix}' is an array and you need same-element matching, use \
+                     raw_filter with $elemMatch instead.",
                 ),
             ));
         }
@@ -875,7 +875,7 @@ mod tests {
     // ---- check_multiple_array_filters ----
 
     #[test]
-    fn multiple_array_filters_info() {
+    fn multiple_dotted_prefix_info() {
         let q = make_find(
             vec![
                 string_filter("transactions.symbol", FilterOperator::Eq, "AAPL"),
@@ -884,17 +884,17 @@ mod tests {
             100,
         );
         let advice = analyze_query(&q, None);
-        assert!(advice.iter().any(|a| a.code == "ELEMMATCH_USED"));
+        assert!(advice.iter().any(|a| a.code == "DOTTED_PREFIX_GROUP"));
     }
 
     #[test]
-    fn single_array_filter_no_elemmatch_info() {
+    fn single_dotted_filter_no_group_info() {
         let q = make_find(
             vec![string_filter("transactions.symbol", FilterOperator::Eq, "AAPL")],
             100,
         );
         let advice = analyze_query(&q, None);
-        assert!(!advice.iter().any(|a| a.code == "ELEMMATCH_USED"));
+        assert!(!advice.iter().any(|a| a.code == "DOTTED_PREFIX_GROUP"));
     }
 
     // ---- check_write_safety ----

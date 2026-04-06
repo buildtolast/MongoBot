@@ -329,24 +329,53 @@ fn build_and_filter(filters: &[Filter]) -> Result<Document, AppError> {
         }
     }
 
-    // For array groups: if only 1 filter, use simple dot notation.
-    // If 2+ filters on same array prefix, wrap in $elemMatch.
-    for (prefix, group_filters) in &array_groups {
-        if group_filters.len() == 1 {
-            // Single filter — simple dot notation works fine
-            let filter = group_filters[0];
-            let condition = build_single_condition(filter)?;
-            doc.insert(filter.field.clone(), condition);
-        } else {
-            // Multiple filters on same array — use $elemMatch
-            let mut elem_match = Document::new();
-            for filter in group_filters {
-                // Strip the array prefix: "transactions.symbol" → "symbol"
-                let inner_field = &filter.field[prefix.len() + 1..];
-                let condition = build_single_condition(filter)?;
-                elem_match.insert(inner_field.to_string(), condition);
+    // For dotted fields: use plain dot notation for all cases.
+    // This works correctly for nested objects (e.g. salary.bonus, salary.currency)
+    // and for arrays (though without same-element matching — use raw_filter with
+    // $elemMatch for that). Previous behavior incorrectly assumed all dotted
+    // prefixes were arrays and wrapped them in $elemMatch.
+    for (_prefix, group_filters) in &array_groups {
+        // Group by full field name for same-field range merging (same logic as top-level)
+        let mut nested_groups: std::collections::BTreeMap<String, Vec<&Filter>> = std::collections::BTreeMap::new();
+        for filter in group_filters {
+            nested_groups.entry(filter.field.clone()).or_default().push(filter);
+        }
+        for (field, group) in &nested_groups {
+            if group.len() == 1 {
+                let condition = build_single_condition(group[0])?;
+                doc.insert(field.clone(), condition);
+            } else {
+                // Multiple conditions on same dotted field — merge
+                let mut merged = Document::new();
+                let mut has_eq = false;
+                for filter in group {
+                    let condition = build_single_condition(filter)?;
+                    match condition {
+                        Bson::Document(sub) => {
+                            for (k, v) in sub {
+                                merged.insert(k, v);
+                            }
+                        }
+                        _ => { has_eq = true; break; }
+                    }
+                }
+                if has_eq || merged.is_empty() {
+                    let mut and_clauses: Vec<Bson> = Vec::new();
+                    for filter in group {
+                        let condition = build_single_condition(filter)?;
+                        and_clauses.push(Bson::Document(doc! { field.clone(): condition }));
+                    }
+                    if let Some(existing_and) = doc.get_mut("$and") {
+                        if let Bson::Array(arr) = existing_and {
+                            arr.extend(and_clauses);
+                        }
+                    } else {
+                        doc.insert("$and".to_string(), Bson::Array(and_clauses));
+                    }
+                } else {
+                    doc.insert(field.clone(), Bson::Document(merged));
+                }
             }
-            doc.insert(prefix.clone(), doc! { "$elemMatch": elem_match });
         }
     }
 
@@ -1252,6 +1281,66 @@ mod tests {
         };
         let doc = build_filter(&query).unwrap();
         assert_eq!(doc.get_str("status").unwrap(), "active");
+    }
+
+    // ── Nested object dot notation (not $elemMatch) ──────────
+
+    #[test]
+    fn test_nested_object_uses_dot_notation_not_elemmatch() {
+        // salary.bonus and salary.currency are nested object fields, not array
+        let filters = vec![
+            Filter {
+                field: "salary.bonus".into(),
+                operator: FilterOperator::Gt,
+                value: serde_json::json!(0),
+            },
+            Filter {
+                field: "salary.currency".into(),
+                operator: FilterOperator::Eq,
+                value: serde_json::json!("USD"),
+            },
+        ];
+        let doc = build_and_filter(&filters).unwrap();
+        // Should use dot notation, NOT $elemMatch
+        assert!(!doc.contains_key("salary"), "Should not have bare 'salary' key with $elemMatch");
+        assert!(doc.contains_key("salary.bonus"), "Should have 'salary.bonus' dot notation");
+        assert!(doc.contains_key("salary.currency"), "Should have 'salary.currency' dot notation");
+        // Verify the conditions
+        let bonus_cond = doc.get_document("salary.bonus").unwrap();
+        assert_eq!(bonus_cond.get_i64("$gt").unwrap(), 0);
+        assert_eq!(doc.get_str("salary.currency").unwrap(), "USD");
+    }
+
+    #[test]
+    fn test_single_dotted_field_still_works() {
+        let filters = vec![Filter {
+            field: "address.city".into(),
+            operator: FilterOperator::Eq,
+            value: serde_json::json!("NYC"),
+        }];
+        let doc = build_and_filter(&filters).unwrap();
+        assert_eq!(doc.get_str("address.city").unwrap(), "NYC");
+    }
+
+    #[test]
+    fn test_dotted_same_field_range_merging() {
+        // salary.base > 50000 AND salary.base < 100000
+        let filters = vec![
+            Filter {
+                field: "salary.base".into(),
+                operator: FilterOperator::Gt,
+                value: serde_json::json!(50000),
+            },
+            Filter {
+                field: "salary.base".into(),
+                operator: FilterOperator::Lt,
+                value: serde_json::json!(100000),
+            },
+        ];
+        let doc = build_and_filter(&filters).unwrap();
+        let cond = doc.get_document("salary.base").unwrap();
+        assert_eq!(cond.get_i64("$gt").unwrap(), 50000);
+        assert_eq!(cond.get_i64("$lt").unwrap(), 100000);
     }
 
     #[test]
