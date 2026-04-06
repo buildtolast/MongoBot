@@ -5,6 +5,7 @@
 # Usage:
 #   ./run.sh                      Run from source with cargo (default)
 #   ./run.sh --docker             Run with Docker Compose (bot + mongo + ollama)
+#   ./run.sh --docker-clean       Run with Docker Compose (full rebuild, no cache)
 #   ./run.sh --build              Clean rebuild + run tests + build binary & Docker
 #   ./run.sh --clean              Remove all build artifacts
 #   ./run.sh --restart            Rebuild + restart (Docker or cargo)
@@ -50,6 +51,7 @@ print_help() {
     echo "Usage:"
     echo "  ./run.sh                Run from source with cargo (default)"
     echo "  ./run.sh --docker       Run with Docker Compose (bot + mongo + ollama)"
+    echo "  ./run.sh --docker-clean Run with Docker Compose (full rebuild, no cache)"
     echo "  ./run.sh --build        Clean rebuild + run tests + build binary & Docker"
     echo "  ./run.sh --clean        Remove all build artifacts"
     echo "  ./run.sh --restart      Rebuild + restart (Docker or cargo)"
@@ -253,6 +255,24 @@ run_restart() {
 case "${1:-}" in
     --docker)
         run_docker
+        ;;
+    --docker-clean)
+        print_config
+        echo -e "${GREEN}Starting with Docker Compose (clean build, no cache)...${NC}"
+        echo -e "${YELLOW}Note: Ollama must be running on the host machine${NC}"
+        echo ""
+        docker compose build --no-cache
+        docker compose up -d
+        echo ""
+        echo -e "${GREEN}Docker containers started (clean build).${NC}"
+        echo ""
+        echo -e "${GREEN}Services:${NC}"
+        echo -e "  Bot:     ${CYAN}http://localhost:${PORT}${NC}"
+        echo -e "  MongoDB: ${CYAN}mongodb://localhost:27017${NC} (Docker)"
+        echo -e "  Ollama:  ${CYAN}http://localhost:11434${NC} (host machine)"
+        echo ""
+        echo -e "View logs: ${YELLOW}docker compose logs -f bot${NC}"
+        verify_build
         ;;
     --build)
         echo -e "${CYAN}═══════════════════════════════════════════════════${NC}"
