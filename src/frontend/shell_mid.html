@@ -49,7 +49,7 @@
         <div class="query-options">
           <label>Model: <select id="model-select"><option>default</option></select></label>
           <label class="toggle-label">
-            <input type="checkbox" id="approve-toggle" />
+            <input type="checkbox" id="approve-toggle" checked />
             <span class="toggle-slider"></span>
             Approve queries
           </label>
@@ -76,6 +76,10 @@
         <div id="query-inspector" class="collapsible">
           <button class="collapsible-toggle">Parsed JSON &#9656;</button>
           <pre id="parsed-query-json" class="code-block" hidden></pre>
+        </div>
+        <div id="raw-llm-panel" class="collapsible">
+          <button class="collapsible-toggle raw-llm-toggle">Raw LLM Response &#9656;</button>
+          <pre id="raw-llm-response" class="code-block raw-llm-code" hidden></pre>
         </div>
       </div>
       <div id="approval-bar" class="approval-bar" hidden>

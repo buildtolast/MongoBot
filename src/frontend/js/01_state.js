@@ -18,7 +18,7 @@ var AppState = {
     sortColumn: null,
     sortDirection: 'asc',
     pendingWrite: null,
-    approveMode: false,
+    approveMode: true,
     pendingApproval: null
 };
 

@@ -129,6 +129,16 @@
     background: rgba(210, 153, 34, 0.05);
 }
 
+.raw-llm-code {
+    color: var(--text-dim);
+    border-color: rgba(139, 148, 158, 0.3);
+    background: rgba(139, 148, 158, 0.05);
+}
+
+.raw-llm-toggle {
+    color: var(--text-dim) !important;
+}
+
 /* --- Table Container --- */
 
 #results-table-container {

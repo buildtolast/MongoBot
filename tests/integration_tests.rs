@@ -410,3 +410,54 @@ async fn find_reviews_high_helpful_votes() {
     assert_eq!(parsed_collection(&r), "reviews");
     // Count may be 0 if filter doesn't match — that's structurally fine
 }
+
+// ═══════════════════════════════════════════════════════════════
+// SECTION 8: Raw LLM response in API output
+// ═══════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn response_includes_raw_llm_response() {
+    let r = query("show all movies").await;
+    assert!(
+        r.get("raw_llm_response").is_some(),
+        "Response should include raw_llm_response field"
+    );
+    let raw = r["raw_llm_response"].as_str().unwrap_or("");
+    assert!(!raw.is_empty(), "raw_llm_response should not be empty");
+    // Raw response should be valid JSON
+    let raw_parsed: Result<Value, _> = serde_json::from_str(raw);
+    assert!(raw_parsed.is_ok(), "raw_llm_response should be valid JSON");
+}
+
+#[tokio::test]
+async fn raw_llm_response_contains_collection() {
+    let r = query("count all actors").await;
+    let raw = r["raw_llm_response"].as_str().unwrap_or("");
+    let raw_json: Value = serde_json::from_str(raw).unwrap_or(json!({}));
+    // The raw LLM output should mention the collection
+    assert!(
+        raw_json.get("collection").is_some(),
+        "Raw LLM response should contain 'collection' field"
+    );
+}
+
+#[tokio::test]
+async fn preview_mode_includes_raw_llm_response() {
+    let client = reqwest::Client::new();
+    let model = std::env::var("TEST_MODEL").unwrap_or_else(|_| "qwen3-coder:30b".to_string());
+    let resp = client
+        .post(format!("{BASE_URL}/api/query"))
+        .json(&json!({ "query": "find all movies", "model": model, "preview": true }))
+        .timeout(std::time::Duration::from_secs(120))
+        .send()
+        .await
+        .expect("Failed to send preview request");
+    assert!(resp.status().is_success());
+    let r: Value = resp.json().await.unwrap();
+    assert!(
+        r.get("raw_llm_response").is_some(),
+        "Preview response should include raw_llm_response"
+    );
+    let raw = r["raw_llm_response"].as_str().unwrap_or("");
+    assert!(!raw.is_empty(), "raw_llm_response in preview should not be empty");
+}

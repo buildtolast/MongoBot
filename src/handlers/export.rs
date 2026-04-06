@@ -13,7 +13,7 @@ pub async fn handle_export(
 ) -> Result<HttpResponse, AppError> {
     // 1. Parse natural language into a structured query via LLM
     let schema_context = state.schema_context();
-    let parsed = state
+    let (parsed, _raw) = state
         .llm
         .parse_query(&params.query, &schema_context, None)
         .await?;

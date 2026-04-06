@@ -49,12 +49,13 @@ impl LlmClient {
     }
 
     /// Parse a natural language query into a structured MongoDB query.
+    /// Returns (parsed_query, raw_llm_response) so callers can compare raw vs validated.
     pub async fn parse_query(
         &self,
         user_query: &str,
         schema_context: &str,
         model_override: Option<&str>,
-    ) -> Result<ParsedQuery, AppError> {
+    ) -> Result<(ParsedQuery, String), AppError> {
         let prompt = build_prompt(user_query, schema_context);
 
         let raw = match self.provider {
@@ -64,7 +65,8 @@ impl LlmClient {
             LlmProvider::OpenAI => self.call_openai(&prompt, model_override).await?,
         };
 
-        parse_llm_response(&raw)
+        let parsed = parse_llm_response(&raw)?;
+        Ok((parsed, raw))
     }
 
     /// List available models based on the current provider.
@@ -747,5 +749,21 @@ mod tests {
         let parsed = parse_llm_response(json).unwrap();
         let raw = parsed.raw_filter.unwrap();
         assert!(raw.get("$or").is_some());
+    }
+
+    #[test]
+    fn test_parse_llm_response_preserves_raw_text() {
+        // Verify that parse_llm_response returns a valid ParsedQuery
+        // and the raw text (tested via the tuple return of parse_query)
+        // can be independently compared against the parsed result.
+        let raw_json = r#"{"collection":"movies","operation":"find","filters":[{"field":"year","operator":"gt","value":2000}],"limit":50}"#;
+        let parsed = parse_llm_response(raw_json).unwrap();
+        assert_eq!(parsed.collection, "movies");
+        assert_eq!(parsed.limit, 50);
+        // The raw string should be parseable independently
+        let raw_value: serde_json::Value = serde_json::from_str(raw_json).unwrap();
+        assert_eq!(raw_value["collection"], "movies");
+        // Raw has the original limit the LLM returned
+        assert_eq!(raw_value["limit"], 50);
     }
 }

@@ -19,7 +19,7 @@ pub async fn handle_query(
 
     // 2. Parse natural language into a structured query via LLM
     let model_override = body.model.as_deref();
-    let parsed = state
+    let (parsed, raw_llm_response) = state
         .llm
         .parse_query(&body.query, &schema_context, model_override)
         .await?;
@@ -52,6 +52,7 @@ pub async fn handle_query(
             advice,
             requires_confirmation: false,
             affected_count: None,
+            raw_llm_response: Some(raw_llm_response.clone()),
         }));
     }
 
@@ -94,6 +95,7 @@ pub async fn handle_query(
             advice,
             requires_confirmation: true,
             affected_count: Some(preview_count as u64),
+            raw_llm_response: Some(raw_llm_response.clone()),
         };
 
         return Ok(HttpResponse::Ok().json(response));
@@ -120,6 +122,7 @@ pub async fn handle_query(
         advice,
         requires_confirmation: false,
         affected_count: None,
+        raw_llm_response: Some(raw_llm_response),
     };
 
     Ok(HttpResponse::Ok().json(response))
@@ -182,6 +185,7 @@ pub async fn handle_execute(
         advice,
         requires_confirmation: false,
         affected_count,
+        raw_llm_response: None,
     };
 
     Ok(HttpResponse::Ok().json(response))

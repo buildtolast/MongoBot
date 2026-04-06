@@ -147,6 +147,20 @@ function renderResults(response) {
         parsedEl.textContent = '(no parsed query available)';
     }
 
+    // Update raw LLM response panel
+    var rawEl = document.getElementById('raw-llm-response');
+    var rawToggle = document.querySelector('.raw-llm-toggle');
+    if (response.raw_llm_response) {
+        try {
+            var rawJson = JSON.parse(response.raw_llm_response);
+            rawEl.textContent = JSON.stringify(rawJson, null, 2);
+        } catch (e) {
+            rawEl.textContent = response.raw_llm_response;
+        }
+    } else {
+        rawEl.textContent = '';
+    }
+
     // Store response
     AppState.lastResults = response;
     AppState.currentPage = 1;

@@ -375,6 +375,10 @@ pub struct QueryResponse {
     /// Number of documents affected by write operation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub affected_count: Option<u64>,
+
+    /// Raw JSON response from the LLM before parsing/validation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_llm_response: Option<String>,
 }
 
 /// Export format options.

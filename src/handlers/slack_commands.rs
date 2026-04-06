@@ -130,7 +130,7 @@ async fn process_query(
     query_text: &str,
 ) -> Result<String, crate::error::AppError> {
     let schema_context = state.schema_context();
-    let parsed = state.llm.parse_query(query_text, &schema_context, None).await?;
+    let (parsed, _raw) = state.llm.parse_query(query_text, &schema_context, None).await?;
 
     let schema = state.get_schema(&parsed.collection);
     state.safety.validate(&parsed, schema.as_ref())?;

@@ -423,7 +423,7 @@
             }
         }
 
-        // Show parsed query
+        // Show parsed query (validated/fixed by app engine)
         var parsedEl = document.getElementById('parsed-query-json');
         parsedEl.textContent = JSON.stringify(response.parsed, null, 2);
         parsedEl.hidden = false;
@@ -435,6 +435,29 @@
         if (parsedToggle) {
             parsedToggle.classList.add('open');
             parsedToggle.innerHTML = 'Parsed JSON &#9662;';
+        }
+
+        // Show raw LLM response (before parsing/validation)
+        var rawEl = document.getElementById('raw-llm-response');
+        var rawToggle = document.querySelector('.raw-llm-toggle');
+        if (response.raw_llm_response) {
+            try {
+                var rawJson = JSON.parse(response.raw_llm_response);
+                rawEl.textContent = JSON.stringify(rawJson, null, 2);
+            } catch (e) {
+                rawEl.textContent = response.raw_llm_response;
+            }
+            rawEl.hidden = false;
+            if (rawToggle) {
+                rawToggle.classList.add('open');
+                rawToggle.innerHTML = 'Raw LLM Response &#9662;';
+            }
+        } else {
+            rawEl.hidden = true;
+            if (rawToggle) {
+                rawToggle.classList.remove('open');
+                rawToggle.innerHTML = 'Raw LLM Response &#9656;';
+            }
         }
 
         // Clear table area
