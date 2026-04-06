@@ -303,53 +303,16 @@ impl LlmClient {
 /// Build the system prompt for NL-to-MongoDB translation.
 pub(crate) fn build_prompt(query: &str, schema: &str) -> String {
     format!(
-        r#"You are a MongoDB query translator. Return ONLY valid JSON. No explanation.
+        r#"You are a MongoDB query translator. Return ONLY valid JSON with these fields. No explanation. Only include fields you need — omit unused optional fields.
 
 Collections:
 {schema}
-JSON format (REQUIRED fields: collection, operation, filters, limit):
-{{
-  "collection": "name",
-  "operation": "find|count|distinct|aggregate|insert|update|delete",
-  "filters": [{{"field":"name","operator":"eq|ne|gt|gte|lt|lte|in|nin|contains|regex|exists|all|size|type","value":"x"}}],
-  "projection": [],
-  "sort": {{"field":"name","order":1}},
-  "limit": 100,
-  "document": {{}},
-  "update_fields": {{}},
-  "update_many": false,
-  "delete_many": false,
-  "or_filters": [[{{"field":"f","operator":"eq","value":"a"}}], [{{"field":"g","operator":"eq","value":"b"}}]],
-  "text_search": "search terms",
-  "expr": {{"$gt": ["$field_a", "$field_b"]}},
-  "group_by": {{"field": "category", "accumulators": [{{"output_field": "total", "operator": "$sum", "input_field": "amount"}}]}},
-  "lookup": {{"from": "other_collection", "local_field": "fk", "foreign_field": "_id", "as_field": "joined"}},
-  "unwind": "array_field",
-  "bucket": {{"group_by": "price", "boundaries": [0, 50, 100, 500]}},
-  "raw_pipeline": [{{"$match": {{}}}}, {{"$group": {{}}}}, ...],
-  "raw_filter": {{"$or": [{{"status": "A"}}, {{"age": {{"$gt": 25}}}}]}}
-}}
 
-Rules:
-- Use only fields from schema. Default limit 100.
-- For date fields use ISO 8601 "YYYY-MM-DDT00:00:00Z" (e.g. "2010-01-01T00:00:00Z"), never bare years.
-- For distinct: put the target field in "projection".
-- For insert: set "document". For update: set "filters" + "update_fields".
-- Set "update_many": true to update all matches. Set "delete_many": true to delete all matches.
-- For OR conditions (e.g. "status is A or B"): use "or_filters" — each inner array is one OR branch.
-- For GROUP BY / aggregation: use "operation": "aggregate" with "group_by". The "field" is the group key. Each accumulator needs output_field, operator ($sum/$avg/$min/$max/$first/$last/$count), and input_field. Use input_field "1" for counting.
-- For JOINs across collections: use "lookup".
-- For flattening arrays before grouping: use "unwind" with the array field name.
-- For range bucketing: use "bucket" with boundaries array.
-- For cross-field comparison (e.g. "where total > budget"): use "expr" with {{"$gt": ["$total", "$budget"]}}.
-- For full-text search: use "text_search" instead of regex.
-- For checking field existence: use operator "exists" with value true/false.
-- For array contains all: use operator "all" with array value.
-- Prefer indexed fields for filters/sort.
-- For array fields use dot notation (e.g. "transactions.symbol").
-- For complex aggregations: use "raw_pipeline" with native MongoDB aggregate pipeline stages. Each element is a stage object like {{"$match": ...}}, {{"$group": ...}}, {{"$sort": ...}}. raw_pipeline takes priority over group_by/lookup/unwind/bucket when present.
-- For complex filter logic (nested $or/$and, $elemMatch with multiple conditions): use "raw_filter" with native MongoDB filter syntax. raw_filter takes priority over filters/or_filters when present.
-- NEVER use $out, $merge, $function, $accumulator, or $where in raw_pipeline or raw_filter.
+Required: "collection", "operation" (find|count|distinct|aggregate|insert|update|delete), "filters" (array), "limit" (default 100).
+Filter format: {{"field":"name","operator":"eq|ne|gt|gte|lt|lte|in|nin|contains|regex|exists|all|size|type","value":"x"}}
+Optional: "projection" (array), "sort" ({{"field":"f","order":1}}), "or_filters" (array of filter arrays for $or), "text_search" (string), "expr" (cross-field comparison like {{"$gt":["$a","$b"]}}), "group_by" ({{"field":"key","accumulators":[{{"output_field":"n","operator":"$sum","input_field":"f"}}]}}), "lookup" ({{"from":"coll","local_field":"f","foreign_field":"f","as_field":"f"}}), "unwind" (field), "bucket" ({{"group_by":"f","boundaries":[0,50,100]}}), "raw_pipeline" (native MongoDB aggregate stages array), "raw_filter" (native MongoDB filter object), "document" (for insert), "update_fields" (for update), "update_many", "delete_many".
+
+Rules: Use only schema fields. Dot notation for nested fields (e.g. "salary.bonus"). Dates as ISO 8601 "YYYY-MM-DDT00:00:00Z". For distinct put field in "projection". For GROUP BY use "operation":"aggregate" with "group_by". For complex queries prefer "raw_pipeline" or "raw_filter" with native MongoDB syntax. Never use $out/$merge/$function/$accumulator/$where.
 
 Query: {query}"#
     )
