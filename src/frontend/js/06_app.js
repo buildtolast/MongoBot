@@ -488,10 +488,16 @@
         var isWrite = ['insert', 'update', 'delete'].indexOf(parsedJson.operation) >= 0;
 
         if (isWrite) {
-            executeWrite(parsedJson).then(function(result) {
-                showLoading(false);
-                renderWriteResult(result);
-            }).catch(function() { showLoading(false); });
+            // Route writes through the confirmation modal so backup is required
+            showLoading(false);
+            var writeResponse = {
+                parsed: parsedJson,
+                results: response.results || [],
+                mongo_query: document.getElementById('mongo-query-cmd').textContent || '',
+                affected_count: response.affected_count || null,
+            };
+            showConfirmModal(writeResponse);
+            return;
         } else {
             // Execute the (possibly edited) parsed query directly via /api/execute
             executeWrite(parsedJson).then(function(result) {
