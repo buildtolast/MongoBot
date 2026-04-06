@@ -71,10 +71,7 @@ pub async fn handle_query(
                 Ok(docs) => {
                     let count = docs.len();
                     let json_docs: Vec<serde_json::Value> = docs.iter()
-                        .filter_map(|d| {
-                            let bson = mongodb::bson::Bson::Document(d.clone());
-                            serde_json::to_value(&bson).ok()
-                        })
+                        .map(bson_doc_to_json)
                         .collect();
                     (serde_json::json!(json_docs), count)
                 }
@@ -194,15 +191,13 @@ pub(crate) fn query_result_len(result: &executor::QueryResult) -> usize {
 }
 
 /// Convert a QueryResult to a serde_json::Value.
+/// BSON DateTime values are formatted as ISO 8601 strings (YYYY-MM-DDTHH:MM:SS.SSSZ).
 pub(crate) fn query_result_to_json(result: &executor::QueryResult) -> serde_json::Value {
     match result {
         executor::QueryResult::Documents(docs) => {
             let json_docs: Vec<serde_json::Value> = docs
                 .iter()
-                .filter_map(|d| {
-                    let bson = mongodb::bson::Bson::Document(d.clone());
-                    serde_json::to_value(&bson).ok()
-                })
+                .map(|d| bson_doc_to_json(d))
                 .collect();
             serde_json::json!(json_docs)
         }
@@ -210,7 +205,7 @@ pub(crate) fn query_result_to_json(result: &executor::QueryResult) -> serde_json
         executor::QueryResult::Values(vals) => {
             let json_vals: Vec<serde_json::Value> = vals
                 .iter()
-                .filter_map(|v| serde_json::to_value(v).ok())
+                .map(bson_to_json)
                 .collect();
             serde_json::json!(json_vals)
         }
@@ -223,6 +218,34 @@ pub(crate) fn query_result_to_json(result: &executor::QueryResult) -> serde_json
                 "inserted_id": w.inserted_id,
             })
         }
+    }
+}
+
+/// Convert a BSON Document to JSON with DateTime formatted as ISO 8601 strings.
+fn bson_doc_to_json(doc: &mongodb::bson::Document) -> serde_json::Value {
+    let mut map = serde_json::Map::new();
+    for (key, val) in doc {
+        map.insert(key.clone(), bson_to_json(val));
+    }
+    serde_json::Value::Object(map)
+}
+
+/// Convert a single BSON value to JSON, formatting DateTime as "YYYY-MM-DDTHH:MM:SS.SSSZ".
+fn bson_to_json(val: &mongodb::bson::Bson) -> serde_json::Value {
+    use mongodb::bson::Bson;
+    match val {
+        Bson::DateTime(dt) => {
+            let millis = dt.timestamp_millis();
+            let chrono_dt = chrono::DateTime::from_timestamp_millis(millis)
+                .unwrap_or_else(|| chrono::DateTime::from_timestamp(0, 0).unwrap());
+            serde_json::Value::String(chrono_dt.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string())
+        }
+        Bson::Document(d) => bson_doc_to_json(d),
+        Bson::Array(arr) => {
+            serde_json::Value::Array(arr.iter().map(bson_to_json).collect())
+        }
+        Bson::ObjectId(oid) => serde_json::Value::String(oid.to_hex()),
+        other => serde_json::to_value(other).unwrap_or(serde_json::Value::Null),
     }
 }
 
