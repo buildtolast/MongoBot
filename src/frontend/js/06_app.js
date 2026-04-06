@@ -112,15 +112,19 @@
             var queryFn = AppState.approveMode ? previewQuery : queryApi;
 
             queryFn(queryText, model).then(function(response) {
-                // If approve mode is on AND this is a read query, show approval panel
+                var parsedOp = response.parsed ? response.parsed.operation : '';
+                var isWriteOp = ['insert', 'update', 'delete'].indexOf(parsedOp) >= 0;
+
+                // Write operations always go through confirmation modal with backup
+                if (isWriteOp || response.requires_confirmation) {
+                    showLoading(false);
+                    showConfirmModal(response);
+                    return;
+                }
+                // Read queries in approve mode show approval panel for review
                 if (AppState.approveMode && !response.requires_confirmation) {
                     showLoading(false);
                     showApprovalPanel(response);
-                    return;
-                }
-                if (response.requires_confirmation) {
-                    showLoading(false);
-                    showConfirmModal(response);
                     return;
                 }
                 showLoading(false);

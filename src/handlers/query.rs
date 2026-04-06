@@ -37,23 +37,28 @@ pub async fn handle_query(
     state.safety.validate(&parsed, schema.as_ref())?;
 
     // 4a. Preview mode (or query-only mode): return parsed query without executing
+    // For write operations, still preview affected documents so backup is available
     if body.preview || state.config.query_only {
-        let mongo_query = executor::build_mongo_shell_command(&parsed);
-        let execution_ms = start.elapsed().as_millis() as u64;
-        let index_analysis = Some(executor::analyze_index_usage(&parsed, schema.as_ref()));
-        let advice = query_advisor::analyze_query(&parsed, schema.as_ref());
-        return Ok(HttpResponse::Ok().json(QueryResponse {
-            parsed,
-            results: serde_json::json!(null),
-            count: 0,
-            execution_ms,
-            mongo_query,
-            index_analysis,
-            advice,
-            requires_confirmation: false,
-            affected_count: None,
-            raw_llm_response: Some(raw_llm_response.clone()),
-        }));
+        if parsed.operation.is_write() && !state.config.query_only {
+            // Fall through to the write handler below which previews affected docs
+        } else {
+            let mongo_query = executor::build_mongo_shell_command(&parsed);
+            let execution_ms = start.elapsed().as_millis() as u64;
+            let index_analysis = Some(executor::analyze_index_usage(&parsed, schema.as_ref()));
+            let advice = query_advisor::analyze_query(&parsed, schema.as_ref());
+            return Ok(HttpResponse::Ok().json(QueryResponse {
+                parsed,
+                results: serde_json::json!(null),
+                count: 0,
+                execution_ms,
+                mongo_query,
+                index_analysis,
+                advice,
+                requires_confirmation: false,
+                affected_count: None,
+                raw_llm_response: Some(raw_llm_response.clone()),
+            }));
+        }
     }
 
     // 4. For write operations, return a confirmation request instead of executing.
