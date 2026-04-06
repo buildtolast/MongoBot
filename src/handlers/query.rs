@@ -128,7 +128,7 @@ pub async fn handle_query(
     Ok(HttpResponse::Ok().json(response))
 }
 
-/// POST /api/execute — Execute a confirmed write operation.
+/// POST /api/execute — Execute a confirmed query (writes or approved reads).
 pub async fn handle_execute(
     state: web::Data<AppState>,
     body: web::Json<ConfirmRequest>,
@@ -143,14 +143,16 @@ pub async fn handle_execute(
     let schema = state.get_schema(&parsed.collection);
     state.safety.validate(parsed, schema.as_ref())?;
 
-    // Execute the write
+    // Execute the query
     let start = Instant::now();
     let result = executor::execute(&state.mongo, parsed).await?;
     let execution_ms = start.elapsed().as_millis() as u64;
 
     let mongo_query = executor::build_mongo_shell_command(parsed);
+    let index_analysis = Some(executor::analyze_index_usage(parsed, schema.as_ref()));
+    let advice = query_advisor::analyze_query(parsed, schema.as_ref());
 
-    // Build response with write result data
+    // Build response
     let (count, results_json, affected_count) = match &result {
         executor::QueryResult::Write(w) => {
             let affected = w.matched_count.max(w.modified_count);
@@ -172,8 +174,8 @@ pub async fn handle_execute(
         count,
         execution_ms,
         mongo_query,
-        index_analysis: None,
-        advice: vec![],
+        index_analysis,
+        advice,
         requires_confirmation: false,
         affected_count,
     };

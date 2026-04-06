@@ -493,14 +493,9 @@
                 renderWriteResult(result);
             }).catch(function() { showLoading(false); });
         } else {
-            // For reads, re-run the original query text
-            var model = document.getElementById('model-select').value;
-            queryApi(AppState.currentQuery, model).then(function(result) {
+            // Execute the (possibly edited) parsed query directly via /api/execute
+            executeWrite(parsedJson).then(function(result) {
                 showLoading(false);
-                if (result.requires_confirmation) {
-                    showConfirmModal(result);
-                    return;
-                }
                 renderResults(result);
                 addToHistory(
                     AppState.currentQuery,
