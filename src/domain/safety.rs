@@ -26,6 +26,8 @@ pub enum SafetyError {
 pub struct SafetyChecker {
     allowed_operations: Vec<String>,
     max_rows: usize,
+    /// When true, destructive pipeline stages ($out, $merge, $function, etc.) are allowed.
+    unsafe_allow_all: bool,
 }
 
 impl SafetyChecker {
@@ -34,7 +36,14 @@ impl SafetyChecker {
         Self {
             allowed_operations,
             max_rows,
+            unsafe_allow_all: false,
         }
+    }
+
+    /// Create a safety checker with the unsafe_allow_all flag.
+    pub fn with_unsafe_allow_all(mut self, allow: bool) -> Self {
+        self.unsafe_allow_all = allow;
+        self
     }
 
     /// Validate a parsed query against safety rules and schema.
@@ -110,12 +119,12 @@ impl SafetyChecker {
 
         // 3e. Validate raw pipeline stages
         if let Some(ref stages) = query.raw_pipeline {
-            validate_raw_pipeline(stages)?;
+            validate_raw_pipeline(stages, self.unsafe_allow_all)?;
         }
 
         // 3f. Validate raw filter document
         if let Some(ref filter) = query.raw_filter {
-            validate_raw_filter(filter)?;
+            validate_raw_filter(filter, self.unsafe_allow_all)?;
         }
 
         // 4. Validate write-specific safety rules
@@ -240,10 +249,14 @@ fn field_matches(field: &str, known: &[&str]) -> bool {
 }
 
 /// Validate raw aggregate pipeline stages for dangerous operators.
-fn validate_raw_pipeline(stages: &[serde_json::Value]) -> Result<(), SafetyError> {
-    const BLOCKED_STAGES: &[&str] = &[
-        "$out", "$merge", "$function", "$accumulator", "$where",
-        "$indexStats", "$collStats", "$planCacheStats", "$currentOp",
+/// When `allow_all` is true, only JS injection patterns are blocked ($function, $accumulator, $where).
+fn validate_raw_pipeline(stages: &[serde_json::Value], allow_all: bool) -> Result<(), SafetyError> {
+    // JS injection is always blocked regardless of allow_all
+    const ALWAYS_BLOCKED: &[&str] = &["$function", "$accumulator", "$where"];
+
+    // These are only blocked when allow_all is false
+    const RESTRICTED_STAGES: &[&str] = &[
+        "$out", "$merge", "$indexStats", "$collStats", "$planCacheStats", "$currentOp",
     ];
 
     for stage in stages {
@@ -251,19 +264,31 @@ fn validate_raw_pipeline(stages: &[serde_json::Value]) -> Result<(), SafetyError
             SafetyError::InjectionDetected("Pipeline stage must be an object".into())
         })?;
 
-        // Check the stage operator key
         for key in obj.keys() {
             let lower = key.to_lowercase();
-            for blocked in BLOCKED_STAGES {
+
+            // JS injection — always blocked
+            for blocked in ALWAYS_BLOCKED {
                 if lower == blocked.to_lowercase() {
                     return Err(SafetyError::InjectionDetected(format!(
-                        "Pipeline stage '{}' is not allowed", key
+                        "Pipeline stage '{}' is not allowed (JavaScript execution)", key
                     )));
+                }
+            }
+
+            // Restricted stages — blocked unless allow_all
+            if !allow_all {
+                for blocked in RESTRICTED_STAGES {
+                    if lower == blocked.to_lowercase() {
+                        return Err(SafetyError::InjectionDetected(format!(
+                            "Pipeline stage '{}' is not allowed (set UNSAFE_ALLOW_ALL_OPERATIONS=true to enable)", key
+                        )));
+                    }
                 }
             }
         }
 
-        // Recursively scan values for dangerous patterns
+        // Recursively scan values for JS injection patterns
         scan_value_for_injection(stage)?;
     }
 
@@ -271,7 +296,8 @@ fn validate_raw_pipeline(stages: &[serde_json::Value]) -> Result<(), SafetyError
 }
 
 /// Validate a raw MongoDB filter document for dangerous operators.
-fn validate_raw_filter(filter: &serde_json::Value) -> Result<(), SafetyError> {
+/// When `allow_all` is true, the operator allowlist is not enforced (but JS injection is still blocked).
+fn validate_raw_filter(filter: &serde_json::Value, allow_all: bool) -> Result<(), SafetyError> {
     const BLOCKED_OPERATORS: &[&str] = &[
         "$where", "$function", "$accumulator",
     ];
@@ -284,7 +310,7 @@ fn validate_raw_filter(filter: &serde_json::Value) -> Result<(), SafetyError> {
         "$expr",
     ];
 
-    scan_filter_keys(filter, BLOCKED_OPERATORS, ALLOWED_OPERATORS)?;
+    scan_filter_keys(filter, BLOCKED_OPERATORS, if allow_all { None } else { Some(ALLOWED_OPERATORS) })?;
     Ok(())
 }
 
@@ -317,29 +343,32 @@ fn scan_value_for_injection(val: &serde_json::Value) -> Result<(), SafetyError> 
 }
 
 /// Recursively scan filter keys, blocking dangerous operators and validating $ operators.
+/// When `allowed` is None, the allowlist is not enforced (all $ operators pass except blocked ones).
 fn scan_filter_keys(
     val: &serde_json::Value,
     blocked: &[&str],
-    allowed: &[&str],
+    allowed: Option<&[&str]>,
 ) -> Result<(), SafetyError> {
     match val {
         serde_json::Value::Object(map) => {
             for (key, child) in map {
                 if key.starts_with('$') {
-                    // Check if blocked
+                    // Check if blocked (JS injection — always enforced)
                     let lower = key.to_lowercase();
                     for b in blocked {
                         if lower == b.to_lowercase() {
                             return Err(SafetyError::InjectionDetected(format!(
-                                "Operator '{}' is not allowed in filters", key
+                                "Operator '{}' is not allowed in filters (JavaScript execution)", key
                             )));
                         }
                     }
-                    // Check if known — unknown $ operators are suspicious
-                    if !allowed.contains(&key.as_str()) {
-                        return Err(SafetyError::InjectionDetected(format!(
-                            "Unknown operator '{}' in filter", key
-                        )));
+                    // Check if known — only when allowlist is enforced
+                    if let Some(allow_list) = allowed {
+                        if !allow_list.contains(&key.as_str()) {
+                            return Err(SafetyError::InjectionDetected(format!(
+                                "Unknown operator '{}' in filter", key
+                            )));
+                        }
                     }
                     // Special: $expr must pass safety check
                     if key == "$expr" {
@@ -693,13 +722,13 @@ mod tests {
     #[test]
     fn test_raw_pipeline_blocks_out() {
         let stages = vec![serde_json::json!({"$out": "evil_collection"})];
-        assert!(validate_raw_pipeline(&stages).is_err());
+        assert!(validate_raw_pipeline(&stages, false).is_err());
     }
 
     #[test]
     fn test_raw_pipeline_blocks_merge() {
         let stages = vec![serde_json::json!({"$merge": {"into": "target"}})];
-        assert!(validate_raw_pipeline(&stages).is_err());
+        assert!(validate_raw_pipeline(&stages, false).is_err());
     }
 
     #[test]
@@ -707,7 +736,7 @@ mod tests {
         let stages = vec![serde_json::json!({
             "$addFields": {"result": {"$function": {"body": "return 1", "args": [], "lang": "js"}}}
         })];
-        assert!(validate_raw_pipeline(&stages).is_err());
+        assert!(validate_raw_pipeline(&stages, false).is_err());
     }
 
     #[test]
@@ -717,7 +746,7 @@ mod tests {
             serde_json::json!({"$group": {"_id": "$category", "count": {"$sum": 1}}}),
             serde_json::json!({"$sort": {"count": -1}}),
         ];
-        assert!(validate_raw_pipeline(&stages).is_ok());
+        assert!(validate_raw_pipeline(&stages, false).is_ok());
     }
 
     // ── Raw filter validation ───────────────────────────────────
@@ -725,7 +754,7 @@ mod tests {
     #[test]
     fn test_raw_filter_blocks_where() {
         let filter = serde_json::json!({"$where": "this.a > this.b"});
-        assert!(validate_raw_filter(&filter).is_err());
+        assert!(validate_raw_filter(&filter, false).is_err());
     }
 
     #[test]
@@ -736,6 +765,33 @@ mod tests {
                 {"$and": [{"role": "admin"}, {"verified": true}]}
             ]
         });
-        assert!(validate_raw_filter(&filter).is_ok());
+        assert!(validate_raw_filter(&filter, false).is_ok());
+    }
+
+    // ── unsafe_allow_all flag ───────────────────────────────────
+
+    #[test]
+    fn test_unsafe_allow_all_permits_out() {
+        let stages = vec![serde_json::json!({"$out": "backup_collection"})];
+        // Blocked by default
+        assert!(validate_raw_pipeline(&stages, false).is_err());
+        // Allowed with flag
+        assert!(validate_raw_pipeline(&stages, true).is_ok());
+    }
+
+    #[test]
+    fn test_unsafe_allow_all_permits_merge() {
+        let stages = vec![serde_json::json!({"$merge": {"into": "target"}})];
+        assert!(validate_raw_pipeline(&stages, false).is_err());
+        assert!(validate_raw_pipeline(&stages, true).is_ok());
+    }
+
+    #[test]
+    fn test_unsafe_allow_all_still_blocks_function() {
+        // $function is JS injection — blocked even with allow_all
+        let stages = vec![serde_json::json!({
+            "$addFields": {"x": {"$function": {"body": "return 1", "args": [], "lang": "js"}}}
+        })];
+        assert!(validate_raw_pipeline(&stages, true).is_err());
     }
 }

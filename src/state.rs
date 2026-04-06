@@ -33,7 +33,7 @@ impl AppState {
         let safety = SafetyChecker::new(
             config.allowed_operations.clone(),
             config.max_result_rows,
-        );
+        ).with_unsafe_allow_all(config.unsafe_allow_all_operations);
 
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))

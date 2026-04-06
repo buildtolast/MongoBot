@@ -104,6 +104,16 @@ pub struct AppConfig {
     /// Dashboard auth token (optional)
     #[arg(long, env = "DASHBOARD_TOKEN")]
     pub dashboard_token: Option<String>,
+
+    /// Allow all pipeline stages and operations, including destructive ones
+    /// ($out, $merge, $function, etc.). USE WITH CAUTION — take backups first.
+    #[arg(long, env = "UNSAFE_ALLOW_ALL_OPERATIONS", default_value = "false")]
+    pub unsafe_allow_all_operations: bool,
+
+    /// Query-only mode: parse and display queries without executing them.
+    /// All queries behave as if preview=true. No data is read from or written to MongoDB.
+    #[arg(long, env = "QUERY_ONLY", default_value = "false")]
+    pub query_only: bool,
 }
 
 fn default_allowed_ops() -> Vec<String> {
@@ -138,6 +148,8 @@ impl fmt::Debug for AppConfig {
             .field("host", &self.host)
             .field("port", &self.port)
             .field("dashboard_token", &redact_option(&self.dashboard_token))
+            .field("unsafe_allow_all_operations", &self.unsafe_allow_all_operations)
+            .field("query_only", &self.query_only)
             .finish()
     }
 }
@@ -174,6 +186,8 @@ mod tests {
             host: "0.0.0.0".into(),
             port: 3000,
             dashboard_token: Some("token123".into()),
+            unsafe_allow_all_operations: false,
+            query_only: false,
         };
         let debug_output = format!("{:?}", config);
         assert!(!debug_output.contains("xoxb-secret"));

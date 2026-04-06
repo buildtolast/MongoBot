@@ -66,6 +66,7 @@ pub fn analyze_query(
     check_or_query(query, &mut advice);
     check_group_high_cardinality(query, &mut advice);
     check_raw_passthrough(query, &mut advice);
+    check_destructive_pipeline_stages(query, &mut advice);
 
     advice
 }
@@ -530,6 +531,39 @@ fn check_group_high_cardinality(query: &ParsedQuery, advice: &mut Vec<QueryAdvic
                 "Grouping by '_id' produces one group per document — this is usually not useful. \
                  Did you mean to group by a different field?",
             ));
+        }
+    }
+}
+
+/// Warning when destructive pipeline stages ($out, $merge) are detected — user must take backup.
+fn check_destructive_pipeline_stages(query: &ParsedQuery, advice: &mut Vec<QueryAdvice>) {
+    let stages = match query.raw_pipeline {
+        Some(ref s) => s,
+        None => return,
+    };
+
+    for stage in stages {
+        let obj = match stage.as_object() {
+            Some(o) => o,
+            None => continue,
+        };
+        for key in obj.keys() {
+            let lower = key.to_lowercase();
+            if lower == "$out" {
+                advice.push(QueryAdvice::error(
+                    "DESTRUCTIVE_OUT",
+                    "WARNING: $out will REPLACE the entire target collection with pipeline results. \
+                     Take a full backup of the target collection BEFORE executing this query. \
+                     This operation is irreversible.",
+                ));
+            } else if lower == "$merge" {
+                advice.push(QueryAdvice::warning(
+                    "DESTRUCTIVE_MERGE",
+                    "WARNING: $merge will INSERT or UPDATE documents in the target collection. \
+                     Take a backup of the target collection BEFORE executing this query. \
+                     Existing documents may be overwritten depending on the whenMatched strategy.",
+                ));
+            }
         }
     }
 }

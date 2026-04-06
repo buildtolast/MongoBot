@@ -90,6 +90,8 @@ All settings can be set via environment variables or CLI flags. Copy `.env.examp
 | `PORT` | `3000` | HTTP server port |
 | `MAX_RESULT_ROWS` | `10000` | Maximum documents returned per query |
 | `ALLOWED_OPERATIONS` | `find,count,distinct,aggregate,insert,update` | Comma-separated operation whitelist (add `delete` to enable) |
+| `UNSAFE_ALLOW_ALL_OPERATIONS` | `false` | Allow destructive pipeline stages (`$out`, `$merge`). **Take backups first.** |
+| `QUERY_ONLY` | `false` | Parse and display queries without executing. No data read or written. |
 
 Slack configuration is optional. The web UI works standalone without it.
 
@@ -134,6 +136,20 @@ tests/              -- integration tests
 ```
 
 ## Changelog
+
+### v0.4.1: Raw Pipeline Passthrough + Safety Controls (2026-04-06)
+
+- [x] **`raw_pipeline`** — LLM outputs native MongoDB aggregate stages directly, bypassing structured intermediary for higher fidelity queries
+- [x] **`raw_filter`** — LLM outputs native MongoDB filter documents for complex `$or`/`$and`/`$elemMatch` logic
+- [x] **BSON DateTime formatting** — all date fields returned as ISO 8601 strings (`YYYY-MM-DDTHH:MM:SS.SSSZ`) instead of extended JSON
+- [x] **`UNSAFE_ALLOW_ALL_OPERATIONS`** config flag — unlocks `$out`, `$merge` for ETL workflows (JS injection still blocked)
+- [x] **`QUERY_ONLY`** mode — parse and display queries without executing; no data read from or written to MongoDB
+- [x] **Destructive operation warnings** — `DESTRUCTIVE_OUT` (error) and `DESTRUCTIVE_MERGE` (warning) advisor rules with backup reminders
+- [x] **Safety: JS injection always blocked** — `$function`, `$accumulator`, `$where` blocked even with `UNSAFE_ALLOW_ALL_OPERATIONS=true`
+- [x] **Fix: editable query for reads** — approved read queries now use the edited parsed JSON instead of re-querying the LLM
+- [x] **`/api/execute` returns full diagnostics** — index analysis + query advice for all operations
+- [x] **No-warranty disclaimer** added to README
+- [x] 112 → 115 unit tests, all 37 integration tests pass
 
 ### v0.4.0: Full Aggregate Pipeline + Missing Operators (2026-04-05)
 
@@ -197,6 +213,12 @@ tests/              -- integration tests
 - [x] Ollama LLM integration, MongoDB execution, safety checker
 - [x] Dark-themed embedded Web UI, CSV/JSON export, Slack handlers
 - [x] run.sh, Docker, 40 unit tests
+
+## Disclaimer
+
+**NO WARRANTY.** This software is provided "as is", without warranty of any kind, express or implied, including but not limited to the warranties of merchantability, fitness for a particular purpose, and noninfringement. In no event shall the authors or copyright holders be liable for any claim, damages, or other liability, whether in an action of contract, tort, or otherwise, arising from, out of, or in connection with the software or the use or other dealings in the software.
+
+**USE AT YOUR OWN RISK.** This tool executes queries against live MongoDB databases. Destructive operations (`$out`, `$merge`, insert, update, delete) can permanently modify or destroy data. Always maintain backups. The authors are not responsible for any data loss, corruption, or unintended modifications resulting from the use of this software.
 
 ## License
 

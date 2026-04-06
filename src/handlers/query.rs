@@ -36,8 +36,8 @@ pub async fn handle_query(
     let schema = state.get_schema(&parsed.collection);
     state.safety.validate(&parsed, schema.as_ref())?;
 
-    // 4a. Preview mode: return parsed query without executing
-    if body.preview {
+    // 4a. Preview mode (or query-only mode): return parsed query without executing
+    if body.preview || state.config.query_only {
         let mongo_query = executor::build_mongo_shell_command(&parsed);
         let execution_ms = start.elapsed().as_millis() as u64;
         let index_analysis = Some(executor::analyze_index_usage(&parsed, schema.as_ref()));
@@ -132,6 +132,13 @@ pub async fn handle_execute(
 ) -> Result<HttpResponse, AppError> {
     if !body.confirm {
         return Err(AppError::Validation("Confirmation required".into()));
+    }
+
+    // Query-only mode: block all execution
+    if state.config.query_only {
+        return Err(AppError::Validation(
+            "Query-only mode is enabled (QUERY_ONLY=true). Queries are parsed but not executed.".into()
+        ));
     }
 
     let parsed = &body.parsed;
