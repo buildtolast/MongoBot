@@ -23,8 +23,8 @@ pub enum QueryResult {
 }
 
 /// Execute a parsed query against MongoDB.
-pub async fn execute(pool: &MongoPool, query: &ParsedQuery) -> Result<QueryResult, AppError> {
-    let filter = build_filter(query)?;
+pub async fn execute(pool: &MongoPool, query: &ParsedQuery, schema: Option<&CollectionSchema>) -> Result<QueryResult, AppError> {
+    let filter = build_filter(query, schema)?;
 
     match query.operation {
         QueryOperation::Find => {
@@ -220,7 +220,7 @@ fn build_single_condition(filter: &Filter) -> Result<Bson, AppError> {
 }
 
 /// Build a complete BSON filter document from a ParsedQuery, including $or, $text, and $expr.
-pub(crate) fn build_filter(query: &ParsedQuery) -> Result<Document, AppError> {
+pub(crate) fn build_filter(query: &ParsedQuery, schema: Option<&CollectionSchema>) -> Result<Document, AppError> {
     // Raw filter takes priority — passthrough native MongoDB filter syntax
     if let Some(ref raw) = query.raw_filter {
         return match json_to_bson(raw)? {
@@ -229,13 +229,13 @@ pub(crate) fn build_filter(query: &ParsedQuery) -> Result<Document, AppError> {
         };
     }
 
-    let mut doc = build_and_filter(&query.filters)?;
+    let mut doc = build_and_filter(&query.filters, schema)?;
 
     // $or conditions
     if !query.or_filters.is_empty() {
         let mut or_branches: Vec<Bson> = Vec::new();
         for branch in &query.or_filters {
-            let branch_doc = build_and_filter(branch)?;
+            let branch_doc = build_and_filter(branch, schema)?;
             or_branches.push(Bson::Document(branch_doc));
         }
         doc.insert("$or", Bson::Array(or_branches));
@@ -256,10 +256,10 @@ pub(crate) fn build_filter(query: &ParsedQuery) -> Result<Document, AppError> {
 }
 
 /// Build AND filter conditions from a list of Filter structs.
-/// When multiple filters target fields inside the same array (e.g. transactions.symbol
-/// and transactions.amount), they are automatically grouped under $elemMatch so MongoDB
-/// matches on the SAME array element.
-fn build_and_filter(filters: &[Filter]) -> Result<Document, AppError> {
+/// When schema is available and the prefix field is an array type, multiple filters
+/// on the same prefix are grouped under $elemMatch for same-element matching.
+/// For non-array nested objects, plain dot notation is used.
+fn build_and_filter(filters: &[Filter], schema: Option<&CollectionSchema>) -> Result<Document, AppError> {
     // Group filters by their array prefix.
     // e.g. "transactions.symbol" and "transactions.amount" share prefix "transactions"
     // while "name" and "year" have no prefix (top-level).
@@ -329,51 +329,64 @@ fn build_and_filter(filters: &[Filter]) -> Result<Document, AppError> {
         }
     }
 
-    // For dotted fields: use plain dot notation for all cases.
-    // This works correctly for nested objects (e.g. salary.bonus, salary.currency)
-    // and for arrays (though without same-element matching — use raw_filter with
-    // $elemMatch for that). Previous behavior incorrectly assumed all dotted
-    // prefixes were arrays and wrapped them in $elemMatch.
-    for (_prefix, group_filters) in &array_groups {
-        // Group by full field name for same-field range merging (same logic as top-level)
-        let mut nested_groups: std::collections::BTreeMap<String, Vec<&Filter>> = std::collections::BTreeMap::new();
-        for filter in group_filters {
-            nested_groups.entry(filter.field.clone()).or_default().push(filter);
-        }
-        for (field, group) in &nested_groups {
-            if group.len() == 1 {
-                let condition = build_single_condition(group[0])?;
-                doc.insert(field.clone(), condition);
-            } else {
-                // Multiple conditions on same dotted field — merge
-                let mut merged = Document::new();
-                let mut has_eq = false;
-                for filter in group {
-                    let condition = build_single_condition(filter)?;
-                    match condition {
-                        Bson::Document(sub) => {
-                            for (k, v) in sub {
-                                merged.insert(k, v);
-                            }
-                        }
-                        _ => { has_eq = true; break; }
-                    }
-                }
-                if has_eq || merged.is_empty() {
-                    let mut and_clauses: Vec<Bson> = Vec::new();
+    // For dotted fields: check schema to decide $elemMatch (array) vs dot notation (object).
+    // If schema says the prefix is an array AND there are 2+ filters, use $elemMatch.
+    // Otherwise, use plain dot notation with range merging.
+    for (prefix, group_filters) in &array_groups {
+        let is_array = schema
+            .and_then(|s| s.fields.iter().find(|f| f.name == *prefix))
+            .map_or(false, |f| f.field_type == "array");
+
+        if is_array && group_filters.len() >= 2 {
+            // Array field with multiple conditions — use $elemMatch
+            let mut elem_match = Document::new();
+            for filter in group_filters {
+                let inner_field = &filter.field[prefix.len() + 1..];
+                let condition = build_single_condition(filter)?;
+                elem_match.insert(inner_field.to_string(), condition);
+            }
+            doc.insert(prefix.clone(), doc! { "$elemMatch": elem_match });
+        } else {
+            // Non-array (nested object) or single filter — use dot notation
+            let mut nested_groups: std::collections::BTreeMap<String, Vec<&Filter>> = std::collections::BTreeMap::new();
+            for filter in group_filters {
+                nested_groups.entry(filter.field.clone()).or_default().push(filter);
+            }
+            for (field, group) in &nested_groups {
+                if group.len() == 1 {
+                    let condition = build_single_condition(group[0])?;
+                    doc.insert(field.clone(), condition);
+                } else {
+                    // Multiple conditions on same dotted field — merge ranges
+                    let mut merged = Document::new();
+                    let mut has_eq = false;
                     for filter in group {
                         let condition = build_single_condition(filter)?;
-                        and_clauses.push(Bson::Document(doc! { field.clone(): condition }));
+                        match condition {
+                            Bson::Document(sub) => {
+                                for (k, v) in sub {
+                                    merged.insert(k, v);
+                                }
+                            }
+                            _ => { has_eq = true; break; }
+                        }
                     }
-                    if let Some(existing_and) = doc.get_mut("$and") {
-                        if let Bson::Array(arr) = existing_and {
-                            arr.extend(and_clauses);
+                    if has_eq || merged.is_empty() {
+                        let mut and_clauses: Vec<Bson> = Vec::new();
+                        for filter in group {
+                            let condition = build_single_condition(filter)?;
+                            and_clauses.push(Bson::Document(doc! { field.clone(): condition }));
+                        }
+                        if let Some(existing_and) = doc.get_mut("$and") {
+                            if let Bson::Array(arr) = existing_and {
+                                arr.extend(and_clauses);
+                            }
+                        } else {
+                            doc.insert("$and".to_string(), Bson::Array(and_clauses));
                         }
                     } else {
-                        doc.insert("$and".to_string(), Bson::Array(and_clauses));
+                        doc.insert(field.clone(), Bson::Document(merged));
                     }
-                } else {
-                    doc.insert(field.clone(), Bson::Document(merged));
                 }
             }
         }
@@ -564,7 +577,7 @@ fn build_accumulator_expr(operator: &str, input_field: &str) -> Result<Bson, App
 
 /// Build a MongoDB shell command string from a ParsedQuery (for display in the UI).
 pub fn build_mongo_shell_command(query: &ParsedQuery) -> String {
-    let filter = build_filter(query).unwrap_or_default();
+    let filter = build_filter(query, None).unwrap_or_default();
     let filter_str = format_bson_doc(&filter);
 
     match query.operation {
@@ -930,7 +943,7 @@ mod tests {
 
     #[test]
     fn test_build_empty_filter() {
-        let doc = build_and_filter(&[]).unwrap();
+        let doc = build_and_filter(&[], None).unwrap();
         assert!(doc.is_empty());
     }
 
@@ -941,7 +954,7 @@ mod tests {
             operator: FilterOperator::Eq,
             value: serde_json::Value::String("Alice".into()),
         }];
-        let doc = build_and_filter(&filters).unwrap();
+        let doc = build_and_filter(&filters, None).unwrap();
         assert_eq!(doc.get_str("name").unwrap(), "Alice");
     }
 
@@ -952,7 +965,7 @@ mod tests {
             operator: FilterOperator::Gt,
             value: serde_json::json!(25),
         }];
-        let doc = build_and_filter(&filters).unwrap();
+        let doc = build_and_filter(&filters, None).unwrap();
         let condition = doc.get_document("age").unwrap();
         assert_eq!(condition.get_i64("$gt").unwrap(), 25);
     }
@@ -995,7 +1008,7 @@ mod tests {
             operator: FilterOperator::Contains,
             value: serde_json::Value::String("test".into()),
         }];
-        let doc = build_and_filter(&filters).unwrap();
+        let doc = build_and_filter(&filters, None).unwrap();
         let condition = doc.get_document("name").unwrap();
         assert!(condition.contains_key("$regex"));
         assert!(condition.contains_key("$options"));
@@ -1008,7 +1021,7 @@ mod tests {
             operator: FilterOperator::In,
             value: serde_json::Value::String("not_array".into()),
         }];
-        assert!(build_and_filter(&filters).is_err());
+        assert!(build_and_filter(&filters, None).is_err());
     }
 
     // ── New filter operators ───────────────────────────────────
@@ -1020,7 +1033,7 @@ mod tests {
             operator: FilterOperator::Exists,
             value: serde_json::json!(true),
         }];
-        let doc = build_and_filter(&filters).unwrap();
+        let doc = build_and_filter(&filters, None).unwrap();
         let cond = doc.get_document("phone").unwrap();
         assert_eq!(cond.get_bool("$exists").unwrap(), true);
     }
@@ -1032,7 +1045,7 @@ mod tests {
             operator: FilterOperator::All,
             value: serde_json::json!(["rust", "mongodb"]),
         }];
-        let doc = build_and_filter(&filters).unwrap();
+        let doc = build_and_filter(&filters, None).unwrap();
         let cond = doc.get_document("tags").unwrap();
         assert!(cond.contains_key("$all"));
     }
@@ -1044,7 +1057,7 @@ mod tests {
             operator: FilterOperator::Size,
             value: serde_json::json!(3),
         }];
-        let doc = build_and_filter(&filters).unwrap();
+        let doc = build_and_filter(&filters, None).unwrap();
         let cond = doc.get_document("items").unwrap();
         assert_eq!(cond.get_i64("$size").unwrap(), 3);
     }
@@ -1056,7 +1069,7 @@ mod tests {
             operator: FilterOperator::Type,
             value: serde_json::json!("number"),
         }];
-        let doc = build_and_filter(&filters).unwrap();
+        let doc = build_and_filter(&filters, None).unwrap();
         let cond = doc.get_document("age").unwrap();
         assert_eq!(cond.get_str("$type").unwrap(), "number");
     }
@@ -1081,7 +1094,7 @@ mod tests {
             ],
             ..Default::default()
         };
-        let doc = build_filter(&query).unwrap();
+        let doc = build_filter(&query, None).unwrap();
         let or_arr = doc.get_array("$or").unwrap();
         assert_eq!(or_arr.len(), 2);
     }
@@ -1093,7 +1106,7 @@ mod tests {
             text_search: Some("mongodb tutorial".into()),
             ..Default::default()
         };
-        let doc = build_filter(&query).unwrap();
+        let doc = build_filter(&query, None).unwrap();
         let text_doc = doc.get_document("$text").unwrap();
         assert_eq!(text_doc.get_str("$search").unwrap(), "mongodb tutorial");
     }
@@ -1105,7 +1118,7 @@ mod tests {
             expr: Some(serde_json::json!({"$gt": ["$total", "$budget"]})),
             ..Default::default()
         };
-        let doc = build_filter(&query).unwrap();
+        let doc = build_filter(&query, None).unwrap();
         assert!(doc.contains_key("$expr"));
     }
 
@@ -1127,7 +1140,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        let filter = build_filter(&query).unwrap();
+        let filter = build_filter(&query, None).unwrap();
         let pipeline = build_aggregate_pipeline(&query, &filter).unwrap();
         // Should have $group + $limit stages (no $match since no filters)
         assert!(pipeline.iter().any(|s| s.contains_key("$group")));
@@ -1154,7 +1167,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        let filter = build_filter(&query).unwrap();
+        let filter = build_filter(&query, None).unwrap();
         let pipeline = build_aggregate_pipeline(&query, &filter).unwrap();
         assert!(pipeline.iter().any(|s| s.contains_key("$lookup")));
     }
@@ -1167,7 +1180,7 @@ mod tests {
             unwind: Some("items".into()),
             ..Default::default()
         };
-        let filter = build_filter(&query).unwrap();
+        let filter = build_filter(&query, None).unwrap();
         let pipeline = build_aggregate_pipeline(&query, &filter).unwrap();
         let unwind_stage = pipeline.iter().find(|s| s.contains_key("$unwind")).unwrap();
         assert_eq!(unwind_stage.get_str("$unwind").unwrap(), "$items");
@@ -1191,7 +1204,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        let filter = build_filter(&query).unwrap();
+        let filter = build_filter(&query, None).unwrap();
         let pipeline = build_aggregate_pipeline(&query, &filter).unwrap();
         assert!(pipeline.iter().any(|s| s.contains_key("$bucket")));
     }
@@ -1226,7 +1239,7 @@ mod tests {
             limit: 10,
             ..Default::default()
         };
-        let filter = build_filter(&query).unwrap();
+        let filter = build_filter(&query, None).unwrap();
         let pipeline = build_aggregate_pipeline(&query, &filter).unwrap();
         // Pipeline order: $match, $lookup, $unwind, $group, $sort, $limit
         let stage_keys: Vec<String> = pipeline.iter()
@@ -1262,7 +1275,7 @@ mod tests {
             })),
             ..Default::default()
         };
-        let doc = build_filter(&query).unwrap();
+        let doc = build_filter(&query, None).unwrap();
         // raw_filter should win — should have $or, not status: "active"
         assert!(doc.contains_key("$or"));
         assert!(!doc.contains_key("status"));
@@ -1279,15 +1292,33 @@ mod tests {
             }],
             ..Default::default()
         };
-        let doc = build_filter(&query).unwrap();
+        let doc = build_filter(&query, None).unwrap();
         assert_eq!(doc.get_str("status").unwrap(), "active");
     }
 
     // ── Nested object dot notation (not $elemMatch) ──────────
 
+    fn make_schema(fields: &[(&str, &str)]) -> CollectionSchema {
+        CollectionSchema {
+            name: "test".into(),
+            description: String::new(),
+            fields: fields.iter().map(|(name, ft)| crate::domain::models::FieldDef {
+                name: name.to_string(),
+                field_type: ft.to_string(),
+                description: None,
+            }).collect(),
+            indexes: vec![],
+            source: "test".into(),
+        }
+    }
+
     #[test]
-    fn test_nested_object_uses_dot_notation_not_elemmatch() {
-        // salary.bonus and salary.currency are nested object fields, not array
+    fn test_nested_object_uses_dot_notation_with_schema() {
+        // salary is a nested object (number fields), NOT an array
+        let schema = make_schema(&[
+            ("salary.bonus", "number"),
+            ("salary.currency", "string"),
+        ]);
         let filters = vec![
             Filter {
                 field: "salary.bonus".into(),
@@ -1300,15 +1331,62 @@ mod tests {
                 value: serde_json::json!("USD"),
             },
         ];
-        let doc = build_and_filter(&filters).unwrap();
-        // Should use dot notation, NOT $elemMatch
-        assert!(!doc.contains_key("salary"), "Should not have bare 'salary' key with $elemMatch");
-        assert!(doc.contains_key("salary.bonus"), "Should have 'salary.bonus' dot notation");
-        assert!(doc.contains_key("salary.currency"), "Should have 'salary.currency' dot notation");
-        // Verify the conditions
-        let bonus_cond = doc.get_document("salary.bonus").unwrap();
-        assert_eq!(bonus_cond.get_i64("$gt").unwrap(), 0);
-        assert_eq!(doc.get_str("salary.currency").unwrap(), "USD");
+        let doc = build_and_filter(&filters, Some(&schema)).unwrap();
+        // No $elemMatch — salary is not an array
+        assert!(!doc.contains_key("salary"), "Should not have bare 'salary' key");
+        assert!(doc.contains_key("salary.bonus"));
+        assert!(doc.contains_key("salary.currency"));
+    }
+
+    #[test]
+    fn test_array_field_uses_elemmatch_with_schema() {
+        // transactions IS an array — $elemMatch should be used
+        let schema = make_schema(&[
+            ("transactions", "array"),
+            ("transactions.symbol", "string"),
+            ("transactions.amount", "number"),
+        ]);
+        let filters = vec![
+            Filter {
+                field: "transactions.symbol".into(),
+                operator: FilterOperator::Eq,
+                value: serde_json::json!("AAPL"),
+            },
+            Filter {
+                field: "transactions.amount".into(),
+                operator: FilterOperator::Gt,
+                value: serde_json::json!(5000),
+            },
+        ];
+        let doc = build_and_filter(&filters, Some(&schema)).unwrap();
+        // Should use $elemMatch since transactions is an array
+        assert!(doc.contains_key("transactions"), "Should have 'transactions' with $elemMatch");
+        let elem = doc.get_document("transactions").unwrap();
+        assert!(elem.contains_key("$elemMatch"), "Should use $elemMatch for array field");
+        let inner = elem.get_document("$elemMatch").unwrap();
+        assert_eq!(inner.get_str("symbol").unwrap(), "AAPL");
+        assert!(inner.get_document("amount").unwrap().contains_key("$gt"));
+    }
+
+    #[test]
+    fn test_no_schema_uses_dot_notation_fallback() {
+        // Without schema, should fall back to dot notation (safe default)
+        let filters = vec![
+            Filter {
+                field: "salary.bonus".into(),
+                operator: FilterOperator::Gt,
+                value: serde_json::json!(0),
+            },
+            Filter {
+                field: "salary.currency".into(),
+                operator: FilterOperator::Eq,
+                value: serde_json::json!("USD"),
+            },
+        ];
+        let doc = build_and_filter(&filters, None).unwrap();
+        assert!(!doc.contains_key("salary"));
+        assert!(doc.contains_key("salary.bonus"));
+        assert!(doc.contains_key("salary.currency"));
     }
 
     #[test]
@@ -1318,7 +1396,7 @@ mod tests {
             operator: FilterOperator::Eq,
             value: serde_json::json!("NYC"),
         }];
-        let doc = build_and_filter(&filters).unwrap();
+        let doc = build_and_filter(&filters, None).unwrap();
         assert_eq!(doc.get_str("address.city").unwrap(), "NYC");
     }
 
@@ -1337,7 +1415,7 @@ mod tests {
                 value: serde_json::json!(100000),
             },
         ];
-        let doc = build_and_filter(&filters).unwrap();
+        let doc = build_and_filter(&filters, None).unwrap();
         let cond = doc.get_document("salary.base").unwrap();
         assert_eq!(cond.get_i64("$gt").unwrap(), 50000);
         assert_eq!(cond.get_i64("$lt").unwrap(), 100000);

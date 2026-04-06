@@ -137,7 +137,7 @@ async fn process_query(
 
     let collection = parsed.collection.clone();
     let operation = parsed.operation.as_str().to_string();
-    let result = executor::execute(&state.mongo, &parsed).await?;
+    let result = executor::execute(&state.mongo, &parsed, schema.as_ref()).await?;
 
     Ok(format_slack_result(&collection, &operation, &result))
 }

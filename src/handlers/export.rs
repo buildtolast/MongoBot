@@ -24,7 +24,7 @@ pub async fn handle_export(
 
     // 3. Execute the query
     let collection_name = parsed.collection.clone();
-    let result = executor::execute(&state.mongo, &parsed).await?;
+    let result = executor::execute(&state.mongo, &parsed, schema.as_ref()).await?;
 
     // 4. Build filename with timestamp
     let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");

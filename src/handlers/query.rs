@@ -70,7 +70,7 @@ pub async fn handle_query(
         let (preview_results, preview_count) = if parsed.operation == crate::domain::models::QueryOperation::Update
             || parsed.operation == crate::domain::models::QueryOperation::Delete
         {
-            let filter = executor::build_filter(&parsed)?;
+            let filter = executor::build_filter(&parsed, schema.as_ref())?;
             match state.mongo.find_documents(
                 &parsed.collection, Some(filter), None, Some(100), None,
             ).await {
@@ -107,7 +107,7 @@ pub async fn handle_query(
     }
 
     // 5. Execute the read query against MongoDB
-    let result = executor::execute(&state.mongo, &parsed).await?;
+    let result = executor::execute(&state.mongo, &parsed, schema.as_ref()).await?;
 
     // 6. Build response with index analysis
     let count = query_result_len(&result);
@@ -157,7 +157,7 @@ pub async fn handle_execute(
 
     // Execute the query
     let start = Instant::now();
-    let result = executor::execute(&state.mongo, parsed).await?;
+    let result = executor::execute(&state.mongo, parsed, schema.as_ref()).await?;
     let execution_ms = start.elapsed().as_millis() as u64;
 
     let mongo_query = executor::build_mongo_shell_command(parsed);
