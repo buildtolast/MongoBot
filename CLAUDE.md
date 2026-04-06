@@ -1,7 +1,7 @@
 # SlackMongoBot — CLAUDE.md
 
 ## Project Overview
-NL-to-MongoDB query bot with Web UI and Slack integration. Actix-web backend with embedded vanilla JS/HTML frontend. 4 LLM providers: Ollama (default), LM Studio, Anthropic Claude, OpenAI GPT. NL parsing via direct HTTP calls (reqwest). Single binary deployment. Default database: `movies` (14+ collections auto-discovered via runtime introspection). Full aggregate pipeline support ($group, $lookup, $unwind, $bucket, $facet). 101 unit tests, 22 source files, 17 frontend files.
+NL-to-MongoDB query bot with Web UI and Slack integration. Actix-web backend with embedded vanilla JS/HTML frontend. 4 LLM providers: Ollama (default), LM Studio, Anthropic Claude, OpenAI GPT. NL parsing via direct HTTP calls (reqwest). Single binary deployment. Default database: `movies` (14+ collections auto-discovered via runtime introspection). Full aggregate pipeline support ($group, $lookup, $unwind, $bucket, $facet). Raw pipeline/filter passthrough for native MongoDB queries. 121 unit tests, 22 source files, 17 frontend files.
 
 ## Build & Run
 ```bash
@@ -40,13 +40,15 @@ build.rs            — assembles frontend into $OUT_DIR/index.html
 - Error handling: `thiserror` + sanitized HTTP responses (internal errors logged, safe messages sent to client)
 - LLM: 4 providers — Ollama (default), LM Studio (OpenAI-compatible), Anthropic Claude, OpenAI GPT. LM Studio and OpenAI share `call_openai_compatible()` implementation
 - Safety: field whitelist from schema, operation whitelist, injection detection, $expr safety validation, accumulator whitelist
-- Query Advisor: `domain/query_advisor.rs` — 21 validation rules (unbounded, missing index, $ne/$nin, regex, aggregate, lookup, $or, etc.)
+- Query Advisor: `domain/query_advisor.rs` — 25 validation rules (unbounded, missing index, $ne/$nin, regex, aggregate, lookup, $or, raw passthrough, destructive ops, etc.)
 - Aggregate pipeline: `ParsedQuery` has typed fields for `group_by`, `lookup`, `unwind`, `bucket`, `facet`. Executor builds full pipeline in order: `$match` → `$lookup` → `$unwind` → `$group` → `$bucket` → `$facet` → `$sort` → `$limit` → `$project`
 - Filter operators: `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `in`, `nin`, `contains`, `regex`, `exists`, `all`, `size`, `type`. Plus `$or` (via `or_filters`), `$text` (via `text_search`), `$expr` (via `expr`)
-- Preview mode: approval toggle in UI; `POST /api/query` with `preview: true` returns parsed query without executing; user can edit the parsed JSON before confirming; `POST /api/execute` executes the edited query for both reads and writes
+- Preview mode: approval toggle in UI (defaults to ON); `POST /api/query` with `preview: true` returns parsed query without executing; user can edit the parsed JSON before confirming; `POST /api/execute` executes the edited query for both reads and writes
 - Settings panel: gear icon opens modal showing all env config with secrets redacted (via `GET /api/config`)
 - Date coercion: `coerce_value_for_field()` and `try_parse_datetime()` in executor — ISO strings and year numbers auto-converted to BSON DateTime
-- `$elemMatch`: array element sub-field filters auto-wrapped in `$elemMatch` by executor
+- Schema-aware `$elemMatch`: array element sub-field filters auto-wrapped in `$elemMatch`, nested object fields use dot notation. Schema threaded through `execute()` -> `build_filter()` -> `build_and_filter()`
+- Raw passthrough: `raw_pipeline` (native aggregate stages) and `raw_filter` (native filter documents) bypass structured intermediary for complex queries
+- LLM transparency: `raw_llm_response` field on `QueryResponse` captures raw LLM output; collapsible UI panel for comparison
 - Filter merging: multiple conditions on the same field merged into single BSON sub-document (range queries)
 - CRUD: insert/update with confirmation dialog + backup download before execution
 - Auth: optional Bearer token, constant-time comparison via `subtle::ConstantTimeEq`
@@ -93,7 +95,7 @@ build.rs            — assembles frontend into $OUT_DIR/index.html
 
 ## Testing
 ```bash
-cargo test                     # all 101 unit + 37 integration tests
+cargo test                     # all 121 unit + 40 integration tests
 cargo test --lib               # unit tests only (fast, no server needed)
 cargo test config              # filter by name
 cargo test -- --nocapture      # show stdout

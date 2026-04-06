@@ -1,6 +1,6 @@
 # Slack-Mongo Query Bot
 
-NL-to-MongoDB query bot with Web UI and Slack integration. Ask questions in plain English, get structured MongoDB query results. Full aggregate pipeline support, 4 LLM providers, 101 unit tests, 30+ commits of iteration.
+NL-to-MongoDB query bot with Web UI and Slack integration. Ask questions in plain English, get structured MongoDB query results. Full aggregate pipeline support, 4 LLM providers, 121 unit tests, 30+ commits of iteration.
 
 <!-- screenshot -->
 
@@ -29,16 +29,18 @@ cargo run -- --mongo-db-name movies
 - Natural language query bar -- type questions like "find active users from last week"
 - Full aggregate pipeline: `$group`, `$lookup`, `$unwind`, `$bucket`, `$facet` stages
 - Filter operators: `$or`, `$exists`, `$all`, `$size`, `$type`, `$text`, `$expr` (cross-field comparisons)
-- Query Advisor with 21 validation rules (unbounded queries, missing indexes, aggregate warnings, etc.)
-- Approval toggle -- preview parsed queries before execution (preview mode)
+- Query Advisor with 25 validation rules (unbounded queries, missing indexes, aggregate warnings, destructive ops, raw passthrough, etc.)
+- Approval toggle -- preview parsed queries before execution (on by default)
 - Editable query: modify the parsed JSON before execution in approval mode (edits applied to reads + writes)
 - CRUD support: insert and update operations with confirmation dialog + backup download
 - Abort button for canceling in-progress queries
 - MongoDB query viewer panel showing actual shell commands (includes pipeline stages)
 - Index analysis showing which indexes are used per query
 - Date auto-conversion (ISO strings, year numbers automatically converted to BSON DateTime)
-- `$elemMatch` for array element queries (auto-grouped in executor)
+- Raw pipeline and raw filter passthrough for native MongoDB queries
+- Schema-aware `$elemMatch`: only array fields get `$elemMatch`, nested objects use dot notation
 - Same-field filter merging for range queries (e.g. price > 10 AND price < 100)
+- Raw LLM response panel for comparing LLM output vs validated query
 
 **LLM Providers (4):**
 - **Ollama** (default) -- local LLM, no API costs, data stays local, `format: "json"` enforced
@@ -97,7 +99,7 @@ Slack configuration is optional. The web UI works standalone without it.
 
 ## Architecture
 
-The server is built on actix-web 4 (with actix-cors for CORS preflight handling) and an embedded vanilla JS/HTML frontend assembled at compile time via `build.rs` (single binary, no Node.js). Natural language queries are parsed by one of 4 LLM providers (Ollama default, LM Studio, Anthropic Claude, OpenAI GPT), validated by a safety checker and query advisor (21 rules), and executed against MongoDB. Full aggregate pipeline support (`$group`, `$lookup`, `$unwind`, `$bucket`, `$facet`) with structured type-safe models. Both the Web UI and Slack bot share the same query processing pipeline. Default model: `qwen3-coder:30b` (recommended), `qwen3:8b` (fast alternative).
+The server is built on actix-web 4 (with actix-cors for CORS preflight handling) and an embedded vanilla JS/HTML frontend assembled at compile time via `build.rs` (single binary, no Node.js). Natural language queries are parsed by one of 4 LLM providers (Ollama default, LM Studio, Anthropic Claude, OpenAI GPT), validated by a safety checker and query advisor (25 rules), and executed against MongoDB. Full aggregate pipeline support (`$group`, `$lookup`, `$unwind`, `$bucket`, `$facet`) with structured type-safe models. Both the Web UI and Slack bot share the same query processing pipeline. Default model: `qwen3-coder:30b` (recommended), `qwen3:8b` (fast alternative).
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed diagrams, data flows, and design decisions.
 
@@ -136,6 +138,21 @@ tests/              -- integration tests
 ```
 
 ## Changelog
+
+### v0.4.2: Schema-Aware Queries + LLM Transparency (2026-04-06)
+
+- [x] **Approve mode defaults to ON** -- safer default; queries always previewed before execution
+- [x] **Raw LLM response captured** -- `raw_llm_response` field on `QueryResponse` for debugging and transparency
+- [x] **"Raw LLM Response" collapsible panel** -- UI panel for comparing LLM output vs validated query
+- [x] **LLM prompt condensed** -- ~40 lines reduced to ~10 lines to prevent truncated JSON responses
+- [x] **Schema-aware `$elemMatch`** -- only array fields get `$elemMatch`, nested objects use dot notation
+- [x] **Schema threaded through execution** -- `execute()` -> `build_filter()` -> `build_and_filter()` all receive schema
+- [x] **Fix: write queries in approve mode** -- backup confirmation modal now shown for write ops in preview
+- [x] **Fix: preview mode for writes** -- falls through to write handler so backup data is available
+- [x] **Advisory rule renamed** -- `ELEMMATCH_USED` -> `DOTTED_PREFIX_GROUP` (reflects schema-aware behavior)
+- [x] **Model dropdown sort** -- default model sorted first, fallback to `qwen3-coder:30b`
+- [x] **`--docker-clean` option** -- full Docker rebuild without cache via `run.sh --docker-clean`
+- [x] 115 -> 121 unit tests, 37 -> 40 integration tests
 
 ### v0.4.1: Raw Pipeline Passthrough + Safety Controls (2026-04-06)
 
