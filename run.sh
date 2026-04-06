@@ -28,6 +28,8 @@ export ALLOWED_OPERATIONS="${ALLOWED_OPERATIONS:-find,count,distinct,aggregate}"
 export SLACK_BOT_TOKEN="${SLACK_BOT_TOKEN:-}"
 export SLACK_SIGNING_SECRET="${SLACK_SIGNING_SECRET:-}"
 export DASHBOARD_TOKEN="${DASHBOARD_TOKEN:-}"
+export UNSAFE_ALLOW_ALL_OPERATIONS="${UNSAFE_ALLOW_ALL_OPERATIONS:-false}"
+export QUERY_ONLY="${QUERY_ONLY:-false}"
 
 APP_NAME="slack-mongo-bot"
 DOCKER_CONTAINER="slack-mongo-bot"
@@ -66,6 +68,8 @@ print_help() {
     echo "  SLACK_SIGNING_SECRET    Slack signing secret (optional)"
     echo "  DASHBOARD_TOKEN         Dashboard auth token (optional)"
     echo "  MAX_RESULT_ROWS         Max export rows (default: 10000)"
+    echo "  UNSAFE_ALLOW_ALL_OPERATIONS  Allow \$out/\$merge stages (default: false)"
+    echo "  QUERY_ONLY              Parse queries without executing (default: false)"
     echo "  RUST_LOG                Log level (default: info)"
     echo ""
 }
@@ -81,6 +85,8 @@ print_config() {
     echo "  PORT:            ${PORT}"
     echo "  SLACK:           ${SLACK_BOT_TOKEN:+configured}${SLACK_BOT_TOKEN:-not configured}"
     echo "  DASHBOARD_AUTH:  ${DASHBOARD_TOKEN:+enabled}${DASHBOARD_TOKEN:-disabled}"
+    echo "  UNSAFE_OPS:      ${UNSAFE_ALLOW_ALL_OPERATIONS}"
+    echo "  QUERY_ONLY:      ${QUERY_ONLY}"
     echo "  RUST_LOG:        ${RUST_LOG}"
     echo ""
 }
@@ -121,6 +127,12 @@ run_cargo() {
     fi
     if [ -n "${DASHBOARD_TOKEN}" ]; then
         ARGS="${ARGS} --dashboard-token ${DASHBOARD_TOKEN}"
+    fi
+    if [ "${UNSAFE_ALLOW_ALL_OPERATIONS}" = "true" ]; then
+        ARGS="${ARGS} --unsafe-allow-all-operations"
+    fi
+    if [ "${QUERY_ONLY}" = "true" ]; then
+        ARGS="${ARGS} --query-only"
     fi
 
     # shellcheck disable=SC2086
