@@ -59,19 +59,37 @@
             });
         });
 
-        // Load available models from Ollama
+        // Load available models — sort default first, select it
         fetchModels().then(function(models) {
             var select = document.getElementById('model-select');
             select.innerHTML = '';
             if (models && models.length > 0) {
+                // Sort: default model first, then alphabetical
+                models.sort(function(a, b) {
+                    if (a.default && !b.default) return -1;
+                    if (!a.default && b.default) return 1;
+                    var na = (a.name || a).toString();
+                    var nb = (b.name || b).toString();
+                    return na.localeCompare(nb);
+                });
+                var hasDefault = false;
                 models.forEach(function(model) {
                     var opt = document.createElement('option');
                     var name = model.name || model;
                     opt.value = name;
                     opt.textContent = name + (model.default ? ' (default)' : '');
-                    if (model.default) opt.selected = true;
+                    if (model.default) { opt.selected = true; hasDefault = true; }
                     select.appendChild(opt);
                 });
+                // If no model marked default, select qwen3-coder:30b if present
+                if (!hasDefault) {
+                    for (var i = 0; i < select.options.length; i++) {
+                        if (select.options[i].value === 'qwen3-coder:30b') {
+                            select.selectedIndex = i;
+                            break;
+                        }
+                    }
+                }
             } else {
                 select.innerHTML = '<option value="default">default</option>';
             }
