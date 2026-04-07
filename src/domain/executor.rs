@@ -434,15 +434,22 @@ pub(crate) fn json_to_bson(value: &serde_json::Value) -> Result<Bson, AppError> 
 }
 
 /// Convert a JSON value (expected array) to a BSON array.
+/// Convert a JSON value to a BSON array. If the value is not an array,
+/// wrap it as a single-element array (LLMs often return a scalar instead of [scalar]).
 fn to_bson_array(value: &serde_json::Value) -> Result<Bson, AppError> {
     match value {
         serde_json::Value::Array(arr) => {
             let bson_arr: Result<Vec<Bson>, _> = arr.iter().map(json_to_bson).collect();
             Ok(Bson::Array(bson_arr?))
         }
-        _ => Err(AppError::Validation(
-            "In/Nin operators require an array value".into(),
+        serde_json::Value::Null => Err(AppError::Validation(
+            "In/Nin/All operators require a value".into(),
         )),
+        other => {
+            // Auto-wrap scalar value into single-element array
+            let bson_val = json_to_bson(other)?;
+            Ok(Bson::Array(vec![bson_val]))
+        }
     }
 }
 
@@ -1015,13 +1022,18 @@ mod tests {
     }
 
     #[test]
-    fn test_in_filter_requires_array() {
+    fn test_in_filter_auto_wraps_scalar() {
+        // LLMs often return scalar instead of array for $in — auto-wrap it
         let filters = vec![Filter {
             field: "status".into(),
             operator: FilterOperator::In,
-            value: serde_json::Value::String("not_array".into()),
+            value: serde_json::Value::String("active".into()),
         }];
-        assert!(build_and_filter(&filters, None).is_err());
+        let doc = build_and_filter(&filters, None).unwrap();
+        let cond = doc.get_document("status").unwrap();
+        let arr = cond.get_array("$in").unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0], Bson::String("active".into()));
     }
 
     // ── New filter operators ───────────────────────────────────
