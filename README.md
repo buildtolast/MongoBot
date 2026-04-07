@@ -52,7 +52,7 @@ LM Studio and OpenAI share a `call_openai_compatible()` implementation. Set `LLM
 
 **UI & Export:**
 - Results table with sortable columns and pagination
-- CSV and JSON export (file download)
+- CSV and JSON export (client-side from cached results -- no server round-trip)
 - Schema browser sidebar showing collections and fields
 - Schema refresh button (detect new collections at runtime without restart)
 - Live model selection (switch models without restart via `/api/models`)
@@ -152,6 +152,8 @@ tests/              -- integration tests
 - [x] **Advisory rule renamed** -- `ELEMMATCH_USED` -> `DOTTED_PREFIX_GROUP` (reflects schema-aware behavior)
 - [x] **Model dropdown sort** -- default model sorted first, fallback to `qwen3-coder:30b`
 - [x] **`--docker-clean` option** -- full Docker rebuild without cache via `run.sh --docker-clean`
+- [x] **Client-side CSV/JSON export** -- builds files from cached results in browser, no server round-trip or LLM re-query
+- [x] **`gemma4:31b` model verified** -- 100% (40/40) integration tests pass (~4s/query)
 - [x] 115 -> 121 unit tests, 37 -> 40 integration tests
 
 ### v0.4.1: Raw Pipeline Passthrough + Safety Controls (2026-04-06)
