@@ -152,12 +152,59 @@ async function fetchModels() {
 }
 
 function exportData(format) {
-    if (!AppState.currentQuery) return;
-    var params = new URLSearchParams({
-        query: AppState.currentQuery,
-        format: format
-    });
-    window.open(API_BASE + '/api/export?' + params.toString(), '_blank');
+    var response = AppState.lastResults;
+    if (!response || !response.results) {
+        showError('No results to export');
+        return;
+    }
+
+    var data = Array.isArray(response.results) ? response.results : [response.results];
+    if (data.length === 0) {
+        showError('No data to export');
+        return;
+    }
+
+    var content, mimeType, ext;
+    if (format === 'csv') {
+        var allKeys = {};
+        data.forEach(function(doc) {
+            Object.keys(flattenDocument(doc)).forEach(function(k) { allKeys[k] = true; });
+        });
+        var headers = Object.keys(allKeys);
+        var rows = [headers.join(',')];
+        data.forEach(function(doc) {
+            var flat = flattenDocument(doc);
+            var row = headers.map(function(h) {
+                var v = flat[h];
+                if (v == null) return '';
+                var s = String(v);
+                if (s.indexOf(',') >= 0 || s.indexOf('"') >= 0 || s.indexOf('\n') >= 0) {
+                    return '"' + s.replace(/"/g, '""') + '"';
+                }
+                return s;
+            });
+            rows.push(row.join(','));
+        });
+        content = rows.join('\n');
+        mimeType = 'text/csv';
+        ext = 'csv';
+    } else {
+        content = JSON.stringify(data, null, 2);
+        mimeType = 'application/json';
+        ext = 'json';
+    }
+
+    var collection = response.parsed ? response.parsed.collection : 'export';
+    var timestamp = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
+    var filename = collection + '_' + timestamp + '.' + ext;
+
+    var blob = new Blob([content], { type: mimeType });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
 }
 
 async function checkHealth() {
