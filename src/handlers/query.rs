@@ -2,7 +2,7 @@ use actix_web::{web, HttpResponse};
 use std::time::Instant;
 
 use crate::domain::executor;
-use crate::domain::models::{ConfirmRequest, QueryRequest, QueryResponse};
+use crate::domain::models::{ConfirmRequest, ExecutionTiming, QueryRequest, QueryResponse};
 use crate::domain::query_advisor;
 use crate::error::AppError;
 use crate::state::AppState;
@@ -19,22 +19,28 @@ pub async fn handle_query(
 
     // 2. Parse natural language into a structured query via LLM
     let model_override = body.model.as_deref();
-    let (parsed, raw_llm_response) = state
+    let llm_start = Instant::now();
+    let (parsed, raw_llm_response, model_used) = state
         .llm
         .parse_query(&body.query, &schema_context, model_override)
         .await?;
+    let llm_parse_ms = llm_start.elapsed().as_millis() as u64;
 
     tracing::info!(
         collection = %parsed.collection,
         operation = ?parsed.operation,
         filters = parsed.filters.len(),
         projection = ?parsed.projection,
+        model = %model_used,
+        llm_ms = llm_parse_ms,
         "Parsed query from NL"
     );
 
     // 3. Validate query safety (with optional schema context)
+    let safety_start = Instant::now();
     let schema = state.get_schema(&parsed.collection);
     state.safety.validate(&parsed, schema.as_ref())?;
+    let safety_check_ms = safety_start.elapsed().as_millis() as u64;
 
     // 4a. Preview mode (or query-only mode): return parsed query without executing
     // For write operations, still preview affected documents so backup is available
@@ -42,21 +48,31 @@ pub async fn handle_query(
         if parsed.operation.is_write() && !state.config.query_only {
             // Fall through to the write handler below which previews affected docs
         } else {
+            let resp_start = Instant::now();
             let mongo_query = executor::build_mongo_shell_command(&parsed);
-            let execution_ms = start.elapsed().as_millis() as u64;
             let index_analysis = Some(executor::analyze_index_usage(&parsed, schema.as_ref()));
             let advice = query_advisor::analyze_query(&parsed, schema.as_ref());
+            let response_build_ms = resp_start.elapsed().as_millis() as u64;
+            let total_ms = start.elapsed().as_millis() as u64;
             return Ok(HttpResponse::Ok().json(QueryResponse {
                 parsed,
                 results: serde_json::json!(null),
                 count: 0,
-                execution_ms,
+                execution_ms: total_ms,
                 mongo_query,
                 index_analysis,
                 advice,
                 requires_confirmation: false,
                 affected_count: None,
                 raw_llm_response: Some(raw_llm_response.clone()),
+                timing: Some(ExecutionTiming {
+                    llm_parse_ms,
+                    model_used: model_used.clone(),
+                    safety_check_ms,
+                    mongo_exec_ms: 0,
+                    response_build_ms,
+                    total_ms,
+                }),
             }));
         }
     }
@@ -64,6 +80,7 @@ pub async fn handle_query(
     // 4. For write operations, return a confirmation request instead of executing.
     //    For update/delete: preview affected documents so user can backup first.
     if parsed.operation.is_write() {
+        let mongo_start = Instant::now();
         let mongo_query = executor::build_mongo_shell_command(&parsed);
 
         // For update/delete: query affected docs as preview for backup
@@ -86,48 +103,71 @@ pub async fn handle_query(
         } else {
             (serde_json::json!(null), 0)
         };
+        let mongo_exec_ms = mongo_start.elapsed().as_millis() as u64;
 
-        let execution_ms = start.elapsed().as_millis() as u64;
-
+        let resp_start = Instant::now();
         let advice = query_advisor::analyze_query(&parsed, schema.as_ref());
+        let response_build_ms = resp_start.elapsed().as_millis() as u64;
+        let total_ms = start.elapsed().as_millis() as u64;
+
         let response = QueryResponse {
             parsed,
             results: preview_results,
             count: preview_count,
-            execution_ms,
+            execution_ms: total_ms,
             mongo_query,
             index_analysis: None,
             advice,
             requires_confirmation: true,
             affected_count: Some(preview_count as u64),
             raw_llm_response: Some(raw_llm_response.clone()),
+            timing: Some(ExecutionTiming {
+                llm_parse_ms,
+                model_used,
+                safety_check_ms,
+                mongo_exec_ms,
+                response_build_ms,
+                total_ms,
+            }),
         };
 
         return Ok(HttpResponse::Ok().json(response));
     }
 
     // 5. Execute the read query against MongoDB
+    let mongo_start = Instant::now();
     let result = executor::execute(&state.mongo, &parsed, schema.as_ref()).await?;
+    let mongo_exec_ms = mongo_start.elapsed().as_millis() as u64;
 
     // 6. Build response with index analysis
+    let resp_start = Instant::now();
     let count = query_result_len(&result);
     let results_json = query_result_to_json(&result);
-    let execution_ms = start.elapsed().as_millis() as u64;
     let mongo_query = executor::build_mongo_shell_command(&parsed);
     let index_analysis = Some(executor::analyze_index_usage(&parsed, schema.as_ref()));
-
     let advice = query_advisor::analyze_query(&parsed, schema.as_ref());
+    let response_build_ms = resp_start.elapsed().as_millis() as u64;
+    let total_ms = start.elapsed().as_millis() as u64;
+
     let response = QueryResponse {
         parsed,
         results: results_json,
         count,
-        execution_ms,
+        execution_ms: total_ms,
         mongo_query,
         index_analysis,
         advice,
         requires_confirmation: false,
         affected_count: None,
         raw_llm_response: Some(raw_llm_response),
+        timing: Some(ExecutionTiming {
+            llm_parse_ms,
+            model_used,
+            safety_check_ms,
+            mongo_exec_ms,
+            response_build_ms,
+            total_ms,
+        }),
     };
 
     Ok(HttpResponse::Ok().json(response))
@@ -191,6 +231,7 @@ pub async fn handle_execute(
         requires_confirmation: false,
         affected_count,
         raw_llm_response: None,
+        timing: None,
     };
 
     Ok(HttpResponse::Ok().json(response))

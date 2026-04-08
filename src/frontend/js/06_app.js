@@ -126,10 +126,21 @@
             AppState.currentQuery = queryText;
             showLoading(true);
 
+            // Show execution timeline with selected model
+            var displayModel = (model && model !== 'default') ? model : '';
+            showTimeline(displayModel);
+
             // If approve mode is on, preview first instead of executing
             var queryFn = AppState.approveMode ? previewQuery : queryApi;
 
             queryFn(queryText, model).then(function(response) {
+                // Update timeline with actual server timing
+                if (response.timing) {
+                    updateTimelineWithTiming(response.timing);
+                } else {
+                    completeTimeline(response.execution_ms || null);
+                }
+
                 var parsedOp = response.parsed ? response.parsed.operation : '';
                 var isWriteOp = ['insert', 'update', 'delete'].indexOf(parsedOp) >= 0;
 
@@ -156,7 +167,10 @@
                 renderHistory(AppState.queryHistory);
             }).catch(function(err) {
                 showLoading(false);
-                if (err.name !== 'AbortError') {
+                if (err.name === 'AbortError') {
+                    errorTimeline('Query aborted by user');
+                } else {
+                    errorTimeline(err.message || 'Query failed');
                     console.error('Query failed:', err);
                 }
             });

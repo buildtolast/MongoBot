@@ -49,14 +49,16 @@ impl LlmClient {
     }
 
     /// Parse a natural language query into a structured MongoDB query.
-    /// Returns (parsed_query, raw_llm_response) so callers can compare raw vs validated.
+    /// Returns (parsed_query, raw_llm_response, model_used) so callers can compare raw vs validated.
     pub async fn parse_query(
         &self,
         user_query: &str,
         schema_context: &str,
         model_override: Option<&str>,
-    ) -> Result<(ParsedQuery, String), AppError> {
+    ) -> Result<(ParsedQuery, String, String), AppError> {
         let prompt = build_prompt(user_query, schema_context);
+
+        let model_used = self.resolve_model(model_override);
 
         let raw = match self.provider {
             LlmProvider::Ollama => self.call_ollama(&prompt, model_override).await?,
@@ -66,7 +68,19 @@ impl LlmClient {
         };
 
         let parsed = parse_llm_response(&raw)?;
-        Ok((parsed, raw))
+        Ok((parsed, raw, model_used))
+    }
+
+    /// Resolve which model name will actually be used for a request.
+    pub fn resolve_model(&self, model_override: Option<&str>) -> String {
+        match self.provider {
+            LlmProvider::Ollama => model_override.unwrap_or(&self.model).to_string(),
+            LlmProvider::LmStudio => model_override
+                .or(self.lmstudio_model.as_deref())
+                .unwrap_or(&self.model)
+                .to_string(),
+            _ => model_override.unwrap_or(&self.model).to_string(),
+        }
     }
 
     /// List available models based on the current provider.

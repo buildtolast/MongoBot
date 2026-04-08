@@ -379,6 +379,27 @@ pub struct QueryResponse {
     /// Raw JSON response from the LLM before parsing/validation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw_llm_response: Option<String>,
+
+    /// Per-step execution timing breakdown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timing: Option<ExecutionTiming>,
+}
+
+/// Per-step execution timing breakdown for the query pipeline.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutionTiming {
+    /// Time spent parsing NL query via LLM (ms).
+    pub llm_parse_ms: u64,
+    /// Model that was actually used for LLM parsing.
+    pub model_used: String,
+    /// Time spent validating query safety (ms).
+    pub safety_check_ms: u64,
+    /// Time spent executing against MongoDB (ms).
+    pub mongo_exec_ms: u64,
+    /// Time spent building response (ms).
+    pub response_build_ms: u64,
+    /// Total wall-clock time (ms).
+    pub total_ms: u64,
 }
 
 /// Export format options.
