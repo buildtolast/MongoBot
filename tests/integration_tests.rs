@@ -13,18 +13,29 @@ use serde_json::{json, Value};
 const BASE_URL: &str = "http://localhost:3000";
 
 /// Helper: send a query to the API and return the parsed JSON response.
+/// Honours TEST_MODEL and TEST_PROVIDER env vars to target a specific provider/model.
 async fn query(text: &str) -> Value {
     let model = std::env::var("TEST_MODEL").unwrap_or_else(|_| "qwen3-coder:30b".to_string());
-    query_with_model(text, &model).await
+    let provider = std::env::var("TEST_PROVIDER").ok();
+    query_with_model_and_provider(text, &model, provider.as_deref()).await
 }
 
 /// Helper: send a query with a specific model.
 async fn query_with_model(text: &str, model: &str) -> Value {
+    let provider = std::env::var("TEST_PROVIDER").ok();
+    query_with_model_and_provider(text, model, provider.as_deref()).await
+}
+
+async fn query_with_model_and_provider(text: &str, model: &str, provider: Option<&str>) -> Value {
     let client = reqwest::Client::new();
+    let mut body = json!({ "query": text, "model": model });
+    if let Some(p) = provider {
+        body["provider"] = json!(p);
+    }
     let resp = client
         .post(format!("{BASE_URL}/api/query"))
-        .json(&json!({ "query": text, "model": model }))
-        .timeout(std::time::Duration::from_secs(120))
+        .json(&body)
+        .timeout(std::time::Duration::from_secs(180))
         .send()
         .await
         .expect("Failed to send request");
@@ -445,14 +456,19 @@ async fn raw_llm_response_contains_collection() {
 async fn preview_mode_includes_raw_llm_response() {
     let client = reqwest::Client::new();
     let model = std::env::var("TEST_MODEL").unwrap_or_else(|_| "qwen3-coder:30b".to_string());
+    let provider = std::env::var("TEST_PROVIDER").ok();
+    let mut body = json!({ "query": "find all movies", "model": model, "preview": true });
+    if let Some(p) = provider {
+        body["provider"] = json!(p);
+    }
     let resp = client
         .post(format!("{BASE_URL}/api/query"))
-        .json(&json!({ "query": "find all movies", "model": model, "preview": true }))
-        .timeout(std::time::Duration::from_secs(120))
+        .json(&body)
+        .timeout(std::time::Duration::from_secs(180))
         .send()
         .await
         .expect("Failed to send preview request");
-    assert!(resp.status().is_success());
+    assert!(resp.status().is_success(), "HTTP {}", resp.status());
     let r: Value = resp.json().await.unwrap();
     assert!(
         r.get("raw_llm_response").is_some(),

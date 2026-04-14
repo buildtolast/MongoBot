@@ -10,6 +10,8 @@ services:
       # On macOS Docker, host.docker.internal resolves to the host.
       OLLAMA_URL: http://host.docker.internal:11434
       OLLAMA_MODEL: qwen3:8b
+      # llama.cpp also runs on the host (llama-server on port 8080)
+      LLAMACPP_URL: http://host.docker.internal:8080
       LLM_PROVIDER: ollama
       HOST: 0.0.0.0
       PORT: "3000"
