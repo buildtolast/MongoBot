@@ -62,6 +62,7 @@ async fn main() -> anyhow::Result<()> {
             .route("/", web::get().to(serve_frontend))
             .route("/api/health", web::get().to(handlers::health::health_check))
             .route("/api/models", web::get().to(handlers::health::list_models))
+            .route("/api/providers", web::get().to(handlers::health::list_providers))
             .route("/api/version", web::get().to(handlers::health::version))
             .route("/api/config", web::get().to(handlers::health::get_config))
 

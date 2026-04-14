@@ -4,7 +4,7 @@
 
 var API_BASE = '';
 
-async function queryApi(queryText, model) {
+async function queryApi(queryText, model, provider) {
     // Cancel any previous in-flight request
     if (currentAbortController) {
         currentAbortController.abort();
@@ -14,6 +14,9 @@ async function queryApi(queryText, model) {
     var body = { query: queryText };
     if (model && model !== 'default') {
         body.model = model;
+    }
+    if (provider) {
+        body.provider = provider;
     }
     try {
         var resp = await fetch(API_BASE + '/api/query', {
@@ -44,7 +47,7 @@ async function queryApi(queryText, model) {
     }
 }
 
-async function previewQuery(queryText, model) {
+async function previewQuery(queryText, model, provider) {
     if (currentAbortController) {
         currentAbortController.abort();
     }
@@ -53,6 +56,9 @@ async function previewQuery(queryText, model) {
     var body = { query: queryText, preview: true };
     if (model && model !== 'default') {
         body.model = model;
+    }
+    if (provider) {
+        body.provider = provider;
     }
     try {
         var resp = await fetch(API_BASE + '/api/query', {
@@ -140,13 +146,26 @@ async function refreshSchemas() {
     }
 }
 
-async function fetchModels() {
+async function fetchModels(provider) {
     try {
-        var resp = await fetch(API_BASE + '/api/models');
+        var url = API_BASE + '/api/models';
+        if (provider) url += '?provider=' + encodeURIComponent(provider);
+        var resp = await fetch(url);
         if (!resp.ok) return [];
         return await resp.json();
     } catch (err) {
         console.warn('Models fetch failed:', err);
+        return [];
+    }
+}
+
+async function fetchProviders() {
+    try {
+        var resp = await fetch(API_BASE + '/api/providers');
+        if (!resp.ok) return [];
+        return await resp.json();
+    } catch (err) {
+        console.warn('Providers fetch failed:', err);
         return [];
     }
 }

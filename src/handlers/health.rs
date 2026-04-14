@@ -2,7 +2,14 @@ use actix_web::{web, HttpResponse};
 use mongodb::bson::doc;
 use serde_json::json;
 
+use crate::config::{AppConfig, LlmProvider};
 use crate::state::AppState;
+
+/// Query string for `/api/models?provider=<name>`.
+#[derive(serde::Deserialize)]
+pub struct ModelsQuery {
+    pub provider: Option<String>,
+}
 
 /// Health check — pings MongoDB and LLM, returns status.
 pub async fn health_check(state: web::Data<AppState>) -> HttpResponse {
@@ -32,20 +39,51 @@ pub async fn health_check(state: web::Data<AppState>) -> HttpResponse {
     }))
 }
 
-/// List available LLM models from Ollama.
-pub async fn list_models(state: web::Data<AppState>) -> HttpResponse {
-    match state.llm.list_models().await {
+/// List available LLM models. Accepts optional `?provider=<name>` to filter by provider.
+pub async fn list_models(
+    state: web::Data<AppState>,
+    query: web::Query<ModelsQuery>,
+) -> HttpResponse {
+    let provider = match query.provider.as_deref() {
+        Some(p) => match crate::infra::llm::parse_provider_str(p) {
+            Ok(p) => p,
+            Err(_) => return HttpResponse::BadRequest().json(json!({"error": format!("Unknown provider: {p}")})),
+        },
+        None => state.config.llm_provider,
+    };
+
+    let default_model = default_model_for_provider(&state.config, provider);
+
+    match state.llm.list_models_for_provider(provider).await {
         Ok(models) => {
-            let default_model = &state.config.ollama_model;
             let model_list: Vec<serde_json::Value> = models.iter()
                 .map(|m| json!({
                     "name": m,
-                    "default": m == default_model,
+                    "default": *m == default_model,
                 }))
                 .collect();
             HttpResponse::Ok().json(model_list)
         }
         Err(_) => HttpResponse::Ok().json(serde_json::json!([])),
+    }
+}
+
+/// List available LLM providers with the configured default marked.
+pub async fn list_providers(state: web::Data<AppState>) -> HttpResponse {
+    let default = state.config.llm_provider.to_string();
+    let providers = ["ollama", "lmstudio", "llamacpp", "anthropic", "openai"];
+    let list: Vec<serde_json::Value> = providers.iter()
+        .map(|p| json!({ "name": p, "default": *p == default }))
+        .collect();
+    HttpResponse::Ok().json(list)
+}
+
+fn default_model_for_provider(config: &AppConfig, provider: LlmProvider) -> String {
+    match provider {
+        LlmProvider::Ollama => config.ollama_model.clone(),
+        LlmProvider::LmStudio => config.lmstudio_model.clone().unwrap_or_default(),
+        LlmProvider::LlamaCpp => config.llamacpp_model.clone().unwrap_or_default(),
+        LlmProvider::Anthropic | LlmProvider::OpenAI => config.cloud_llm_model.clone().unwrap_or_default(),
     }
 }
 

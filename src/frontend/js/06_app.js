@@ -59,8 +59,8 @@
             });
         });
 
-        // Load available models — sort default first, select it
-        fetchModels().then(function(models) {
+        // Populate the model dropdown from an array of models
+        function populateModelDropdown(models) {
             var select = document.getElementById('model-select');
             select.innerHTML = '';
             if (models && models.length > 0) {
@@ -93,6 +93,34 @@
             } else {
                 select.innerHTML = '<option value="default">default</option>';
             }
+        }
+
+        // Load available providers, then models for the default provider
+        fetchProviders().then(function(providers) {
+            var providerSelect = document.getElementById('provider-select');
+            providerSelect.innerHTML = '';
+            if (providers && providers.length > 0) {
+                providers.forEach(function(p) {
+                    var opt = document.createElement('option');
+                    opt.value = p.name;
+                    opt.textContent = p.name + (p.default ? ' (default)' : '');
+                    if (p.default) opt.selected = true;
+                    providerSelect.appendChild(opt);
+                });
+            } else {
+                providerSelect.innerHTML = '<option value="ollama">ollama</option>';
+            }
+            return fetchModels(providerSelect.value);
+        }).then(function(models) {
+            populateModelDropdown(models);
+        });
+
+        // On provider change, re-fetch models for that provider
+        document.getElementById('provider-select').addEventListener('change', function() {
+            var provider = this.value;
+            fetchModels(provider).then(function(models) {
+                populateModelDropdown(models);
+            });
         });
 
         // Check health
@@ -122,6 +150,7 @@
             if (!queryText) return;
 
             var model = document.getElementById('model-select').value;
+            var provider = document.getElementById('provider-select').value;
 
             AppState.currentQuery = queryText;
             showLoading(true);
@@ -133,7 +162,7 @@
             // If approve mode is on, preview first instead of executing
             var queryFn = AppState.approveMode ? previewQuery : queryApi;
 
-            queryFn(queryText, model).then(function(response) {
+            queryFn(queryText, model, provider).then(function(response) {
                 // Update timeline with actual server timing
                 if (response.timing) {
                     updateTimelineWithTiming(response.timing);

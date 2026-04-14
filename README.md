@@ -1,6 +1,6 @@
 # Slack-Mongo Query Bot
 
-NL-to-MongoDB query bot with Web UI and Slack integration. Ask questions in plain English, get structured MongoDB query results. Full aggregate pipeline support, 5 LLM providers, 123 unit tests, 30+ commits of iteration.
+NL-to-MongoDB query bot with Web UI and Slack integration. Ask questions in plain English, get structured MongoDB query results. Full aggregate pipeline support, 5 LLM providers (switchable at runtime from the UI), 124 unit tests, 30+ commits of iteration.
 
 <!-- screenshot -->
 
@@ -49,7 +49,7 @@ cargo run -- --mongo-db-name movies
 - **Anthropic Claude** -- cloud, requires `CLOUD_LLM_API_KEY`
 - **OpenAI GPT** -- cloud, requires `CLOUD_LLM_API_KEY`
 
-LM Studio, llama.cpp, and OpenAI share a `call_openai_compatible()` implementation. Set `LLM_PROVIDER` to switch providers.
+LM Studio, llama.cpp, and OpenAI share a `call_openai_compatible()` implementation. The provider can be **switched at runtime from the UI** via the Provider dropdown — `LLM_PROVIDER` env var sets the default.
 
 **UI & Export:**
 - Results table with sortable columns and pagination
@@ -141,6 +141,16 @@ tests/              -- integration tests
 ```
 
 ## Changelog
+
+### v0.4.4: Runtime Provider Switching (2026-04-14)
+
+- [x] **Provider dropdown in UI** -- switch between Ollama / LM Studio / llama.cpp / Anthropic / OpenAI without restart
+- [x] **`provider` field on `QueryRequest`** -- per-request override; falls back to `LLM_PROVIDER` env var
+- [x] **`GET /api/providers`** new endpoint -- returns 5 providers with default marked
+- [x] **`GET /api/models?provider=<name>`** -- list models for any provider, not just the configured default
+- [x] **Model dropdown auto-refreshes** when provider changes
+- [x] **`parse_provider_str()`** helper -- accepts case-insensitive aliases (claude, gpt, llama.cpp, etc.)
+- [x] 123 -> 124 unit tests (+1 for `parse_provider_str` coverage)
 
 ### v0.4.3: llama.cpp Provider (2026-04-14)
 

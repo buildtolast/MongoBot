@@ -1,7 +1,7 @@
 # SlackMongoBot — CLAUDE.md
 
 ## Project Overview
-NL-to-MongoDB query bot with Web UI and Slack integration. Actix-web backend with embedded vanilla JS/HTML frontend. 5 LLM providers: Ollama (default), LM Studio, llama.cpp, Anthropic Claude, OpenAI GPT. NL parsing via direct HTTP calls (reqwest). Single binary deployment. Default database: `movies` (14+ collections auto-discovered via runtime introspection). Full aggregate pipeline support ($group, $lookup, $unwind, $bucket, $facet). Raw pipeline/filter passthrough for native MongoDB queries. 123 unit tests, 22 source files, 17 frontend files.
+NL-to-MongoDB query bot with Web UI and Slack integration. Actix-web backend with embedded vanilla JS/HTML frontend. 5 LLM providers: Ollama (default), LM Studio, llama.cpp, Anthropic Claude, OpenAI GPT — switchable at runtime from the UI. NL parsing via direct HTTP calls (reqwest). Single binary deployment. Default database: `movies` (14+ collections auto-discovered via runtime introspection). Full aggregate pipeline support ($group, $lookup, $unwind, $bucket, $facet). Raw pipeline/filter passthrough for native MongoDB queries. 124 unit tests, 22 source files, 17 frontend files.
 
 ## Build & Run
 ```bash
@@ -53,7 +53,7 @@ build.rs            — assembles frontend into $OUT_DIR/index.html
 - CRUD: insert/update with confirmation dialog + backup download before execution
 - Auth: optional Bearer token, constant-time comparison via `subtle::ConstantTimeEq`
 - Schema loading: auto-discovered from MongoDB at runtime (runtime introspection with array element sampling); refreshable via `POST /api/schemas/refresh`
-- Model selection: `GET /api/models` lists available Ollama models; queries can specify `model` override
+- Model + provider selection: `GET /api/providers` lists 5 providers, `GET /api/models?provider=<name>` lists models for a specific provider; queries can specify `model` and `provider` override fields
 
 ## Dependencies (key)
 - `actix-web 4`, `actix-ws 0.3` — HTTP server + WebSocket
@@ -72,7 +72,8 @@ build.rs            — assembles frontend into $OUT_DIR/index.html
 ## Endpoints
 - `GET /` — embedded frontend
 - `GET /api/health` — health check (MongoDB + LLM)
-- `GET /api/models` — list available models (provider-aware: Ollama tags, OpenAI-compat /v1/models, Anthropic static list)
+- `GET /api/models` — list available models (accepts `?provider=<name>` for any of the 5 providers)
+- `GET /api/providers` — list all 5 LLM providers with the configured default marked
 - `GET /api/version` — build metadata
 - `GET /api/config` — current configuration with secrets redacted (LLM, MongoDB, server, safety, Slack sections)
 - `POST /api/query` — NL query (supports `preview: true` for approval mode + editable query)

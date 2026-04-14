@@ -19,10 +19,13 @@ pub async fn handle_query(
 
     // 2. Parse natural language into a structured query via LLM
     let model_override = body.model.as_deref();
+    let provider_override = body.provider.as_deref()
+        .map(crate::infra::llm::parse_provider_str)
+        .transpose()?;
     let llm_start = Instant::now();
     let (parsed, raw_llm_response, model_used) = state
         .llm
-        .parse_query(&body.query, &schema_context, model_override)
+        .parse_query(&body.query, &schema_context, model_override, provider_override)
         .await?;
     let llm_parse_ms = llm_start.elapsed().as_millis() as u64;
 

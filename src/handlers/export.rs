@@ -15,7 +15,7 @@ pub async fn handle_export(
     let schema_context = state.schema_context();
     let (parsed, _raw, _model) = state
         .llm
-        .parse_query(&params.query, &schema_context, None)
+        .parse_query(&params.query, &schema_context, None, None)
         .await?;
 
     // 2. Validate query safety

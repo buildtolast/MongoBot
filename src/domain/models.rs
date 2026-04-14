@@ -337,6 +337,10 @@ pub struct QueryRequest {
     #[serde(default)]
     pub model: Option<String>,
 
+    /// Optional provider override (e.g. "ollama", "anthropic"). Uses default if omitted.
+    #[serde(default)]
+    pub provider: Option<String>,
+
     /// If true, only parse and validate — don't execute the query.
     #[serde(default)]
     pub preview: bool,

@@ -62,12 +62,14 @@ impl LlmClient {
         user_query: &str,
         schema_context: &str,
         model_override: Option<&str>,
+        provider_override: Option<LlmProvider>,
     ) -> Result<(ParsedQuery, String, String), AppError> {
         let prompt = build_prompt(user_query, schema_context);
 
-        let model_used = self.resolve_model(model_override);
+        let provider = provider_override.unwrap_or(self.provider);
+        let model_used = self.resolve_model(model_override, provider_override);
 
-        let raw = match self.provider {
+        let raw = match provider {
             LlmProvider::Ollama => self.call_ollama(&prompt, model_override).await?,
             LlmProvider::LmStudio => self.call_lmstudio(&prompt, model_override).await?,
             LlmProvider::LlamaCpp => self.call_llamacpp(&prompt, model_override).await?,
@@ -80,8 +82,9 @@ impl LlmClient {
     }
 
     /// Resolve which model name will actually be used for a request.
-    pub fn resolve_model(&self, model_override: Option<&str>) -> String {
-        match self.provider {
+    pub fn resolve_model(&self, model_override: Option<&str>, provider_override: Option<LlmProvider>) -> String {
+        let provider = provider_override.unwrap_or(self.provider);
+        match provider {
             LlmProvider::Ollama => model_override.unwrap_or(&self.model).to_string(),
             LlmProvider::LmStudio => model_override
                 .or(self.lmstudio_model.as_deref())
@@ -97,7 +100,12 @@ impl LlmClient {
 
     /// List available models based on the current provider.
     pub async fn list_models(&self) -> Result<Vec<String>, AppError> {
-        match self.provider {
+        self.list_models_for_provider(self.provider).await
+    }
+
+    /// List available models for a specific provider.
+    pub async fn list_models_for_provider(&self, provider: LlmProvider) -> Result<Vec<String>, AppError> {
+        match provider {
             LlmProvider::Ollama => self.list_ollama_models().await,
             LlmProvider::LmStudio => self.list_openai_compat_models(&self.lmstudio_url).await,
             LlmProvider::LlamaCpp => self.list_openai_compat_models(&self.llamacpp_url).await,
@@ -339,6 +347,18 @@ impl LlmClient {
     }
 }
 
+
+/// Parse a provider name string (case-insensitive, with common aliases) to LlmProvider.
+pub fn parse_provider_str(s: &str) -> Result<LlmProvider, AppError> {
+    match s.to_lowercase().as_str() {
+        "ollama" => Ok(LlmProvider::Ollama),
+        "lmstudio" | "lm_studio" | "lm-studio" => Ok(LlmProvider::LmStudio),
+        "llamacpp" | "llama" | "llama_cpp" | "llama-cpp" | "llama.cpp" => Ok(LlmProvider::LlamaCpp),
+        "anthropic" | "claude" => Ok(LlmProvider::Anthropic),
+        "openai" | "gpt" => Ok(LlmProvider::OpenAI),
+        _ => Err(AppError::Config(format!("Unknown LLM provider: {s}"))),
+    }
+}
 
 /// Build the system prompt for NL-to-MongoDB translation.
 pub(crate) fn build_prompt(query: &str, schema: &str) -> String {
@@ -752,6 +772,23 @@ mod tests {
         let parsed = parse_llm_response(json).unwrap();
         let raw = parsed.raw_filter.unwrap();
         assert!(raw.get("$or").is_some());
+    }
+
+    #[test]
+    fn test_parse_provider_str() {
+        assert_eq!(parse_provider_str("ollama").unwrap(), LlmProvider::Ollama);
+        assert_eq!(parse_provider_str("OLLAMA").unwrap(), LlmProvider::Ollama);
+        assert_eq!(parse_provider_str("LmStudio").unwrap(), LlmProvider::LmStudio);
+        assert_eq!(parse_provider_str("lmstudio").unwrap(), LlmProvider::LmStudio);
+        assert_eq!(parse_provider_str("llamacpp").unwrap(), LlmProvider::LlamaCpp);
+        assert_eq!(parse_provider_str("llama.cpp").unwrap(), LlmProvider::LlamaCpp);
+        assert_eq!(parse_provider_str("llama").unwrap(), LlmProvider::LlamaCpp);
+        assert_eq!(parse_provider_str("anthropic").unwrap(), LlmProvider::Anthropic);
+        assert_eq!(parse_provider_str("claude").unwrap(), LlmProvider::Anthropic);
+        assert_eq!(parse_provider_str("openai").unwrap(), LlmProvider::OpenAI);
+        assert_eq!(parse_provider_str("gpt").unwrap(), LlmProvider::OpenAI);
+        assert!(parse_provider_str("unknown").is_err());
+        assert!(parse_provider_str("").is_err());
     }
 
     #[test]
