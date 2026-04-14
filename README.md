@@ -1,6 +1,6 @@
 # Slack-Mongo Query Bot
 
-NL-to-MongoDB query bot with Web UI and Slack integration. Ask questions in plain English, get structured MongoDB query results. Full aggregate pipeline support, 4 LLM providers, 121 unit tests, 30+ commits of iteration.
+NL-to-MongoDB query bot with Web UI and Slack integration. Ask questions in plain English, get structured MongoDB query results. Full aggregate pipeline support, 5 LLM providers, 123 unit tests, 30+ commits of iteration.
 
 <!-- screenshot -->
 
@@ -42,13 +42,14 @@ cargo run -- --mongo-db-name movies
 - Same-field filter merging for range queries (e.g. price > 10 AND price < 100)
 - Raw LLM response panel for comparing LLM output vs validated query
 
-**LLM Providers (4):**
+**LLM Providers (5):**
 - **Ollama** (default) -- local LLM, no API costs, data stays local, `format: "json"` enforced
 - **LM Studio** -- local, OpenAI-compatible API at `localhost:1234`
+- **llama.cpp** -- local, OpenAI-compatible `llama-server` at `localhost:8080`, direct GGUF model execution
 - **Anthropic Claude** -- cloud, requires `CLOUD_LLM_API_KEY`
 - **OpenAI GPT** -- cloud, requires `CLOUD_LLM_API_KEY`
 
-LM Studio and OpenAI share a `call_openai_compatible()` implementation. Set `LLM_PROVIDER` to switch providers.
+LM Studio, llama.cpp, and OpenAI share a `call_openai_compatible()` implementation. Set `LLM_PROVIDER` to switch providers.
 
 **UI & Export:**
 - Results table with sortable columns and pagination
@@ -61,7 +62,7 @@ LM Studio and OpenAI share a `call_openai_compatible()` implementation. Set `LLM
 
 **Integration:**
 - Slack `/mongo` slash command and `@query-bot` mentions
-- 4 LLM providers: Ollama, LM Studio, Anthropic Claude, OpenAI GPT
+- 5 LLM providers: Ollama, LM Studio, llama.cpp, Anthropic Claude, OpenAI GPT
 - Safety checker: operation whitelist, field whitelist, injection detection
 
 **Documentation:**
@@ -81,6 +82,8 @@ All settings can be set via environment variables or CLI flags. Copy `.env.examp
 | `OLLAMA_MODEL` | `qwen3-coder:30b` | Ollama model for NL parsing (recommended) |
 | `LMSTUDIO_URL` | `http://localhost:1234` | LM Studio API endpoint (OpenAI-compatible) |
 | `LMSTUDIO_MODEL` | -- | LM Studio model name (auto-detected if not set) |
+| `LLAMACPP_URL` | `http://localhost:8080` | llama.cpp server URL (OpenAI-compatible) |
+| `LLAMACPP_MODEL` | -- | llama.cpp model name (optional, for display) |
 | `CLOUD_LLM_API_KEY` | -- | API key for Anthropic or OpenAI |
 | `CLOUD_LLM_MODEL` | -- | Model name for cloud providers |
 | `ANTHROPIC_API_URL` | `https://api.anthropic.com` | Anthropic API URL (override for proxies) |
@@ -99,7 +102,7 @@ Slack configuration is optional. The web UI works standalone without it.
 
 ## Architecture
 
-The server is built on actix-web 4 (with actix-cors for CORS preflight handling) and an embedded vanilla JS/HTML frontend assembled at compile time via `build.rs` (single binary, no Node.js). Natural language queries are parsed by one of 4 LLM providers (Ollama default, LM Studio, Anthropic Claude, OpenAI GPT), validated by a safety checker and query advisor (25 rules), and executed against MongoDB. Full aggregate pipeline support (`$group`, `$lookup`, `$unwind`, `$bucket`, `$facet`) with structured type-safe models. Both the Web UI and Slack bot share the same query processing pipeline. Default model: `qwen3-coder:30b` (recommended), `qwen3:8b` (fast alternative).
+The server is built on actix-web 4 (with actix-cors for CORS preflight handling) and an embedded vanilla JS/HTML frontend assembled at compile time via `build.rs` (single binary, no Node.js). Natural language queries are parsed by one of 5 LLM providers (Ollama default, LM Studio, llama.cpp, Anthropic Claude, OpenAI GPT), validated by a safety checker and query advisor (25 rules), and executed against MongoDB. Full aggregate pipeline support (`$group`, `$lookup`, `$unwind`, `$bucket`, `$facet`) with structured type-safe models. Both the Web UI and Slack bot share the same query processing pipeline. Default model: `qwen3-coder:30b` (recommended), `qwen3:8b` (fast alternative).
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed diagrams, data flows, and design decisions.
 
@@ -138,6 +141,16 @@ tests/              -- integration tests
 ```
 
 ## Changelog
+
+### v0.4.3: llama.cpp Provider (2026-04-14)
+
+- [x] **llama.cpp provider** -- direct GGUF execution via `llama-server` OpenAI-compatible API at `localhost:8080`
+- [x] **5 LLM providers total** -- Ollama, LM Studio, llama.cpp, Anthropic Claude, OpenAI GPT
+- [x] **`LLAMACPP_URL` / `LLAMACPP_MODEL`** env vars with sensible defaults
+- [x] **Settings panel** -- displays llama.cpp URL and model alongside other providers
+- [x] **`run.sh`** integration -- passes new CLI flags automatically
+- [x] **Shared implementation** -- reuses `call_openai_compatible()` helper (no new HTTP code)
+- [x] 121 -> 123 unit tests (+2 for LlamaCpp variant/display)
 
 ### v0.4.2: Schema-Aware Queries + LLM Transparency (2026-04-06)
 

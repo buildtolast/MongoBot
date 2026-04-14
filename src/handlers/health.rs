@@ -68,6 +68,8 @@ pub async fn get_config(state: web::Data<AppState>) -> HttpResponse {
             "ollama_model": config.ollama_model,
             "lmstudio_url": config.lmstudio_url,
             "lmstudio_model": config.lmstudio_model,
+            "llamacpp_url": config.llamacpp_url,
+            "llamacpp_model": config.llamacpp_model,
             "anthropic_api_url": config.anthropic_api_url,
             "openai_api_url": config.openai_api_url,
             "cloud_llm_model": config.cloud_llm_model,

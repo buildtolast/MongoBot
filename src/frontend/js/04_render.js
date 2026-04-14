@@ -26,6 +26,8 @@ function renderConfig(config) {
         ['Ollama Model', llm.ollama_model],
         ['LM Studio URL', llm.lmstudio_url],
         ['LM Studio Model', llm.lmstudio_model],
+        ['llama.cpp URL', llm.llamacpp_url],
+        ['llama.cpp Model', llm.llamacpp_model],
         ['Anthropic URL', llm.anthropic_api_url],
         ['OpenAI URL', llm.openai_api_url],
         ['Cloud Model', llm.cloud_llm_model],

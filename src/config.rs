@@ -10,6 +10,8 @@ pub enum LlmProvider {
     OpenAI,
     #[value(alias = "lmstudio")]
     LmStudio,
+    #[value(alias = "llamacpp", alias = "llama")]
+    LlamaCpp,
 }
 
 impl Default for LlmProvider {
@@ -25,6 +27,7 @@ impl fmt::Display for LlmProvider {
             Self::Anthropic => write!(f, "anthropic"),
             Self::OpenAI => write!(f, "openai"),
             Self::LmStudio => write!(f, "lmstudio"),
+            Self::LlamaCpp => write!(f, "llamacpp"),
         }
     }
 }
@@ -68,6 +71,15 @@ pub struct AppConfig {
     /// LM Studio model name
     #[arg(long, env = "LMSTUDIO_MODEL")]
     pub lmstudio_model: Option<String>,
+
+    /// llama.cpp server URL (OpenAI-compatible API)
+    #[arg(long, env = "LLAMACPP_URL", default_value = "http://localhost:8080")]
+    pub llamacpp_url: String,
+
+    /// llama.cpp model name (optional — llama-server loads one model per process,
+    /// used only for display/identification).
+    #[arg(long, env = "LLAMACPP_MODEL")]
+    pub llamacpp_model: Option<String>,
 
     /// API key for cloud LLM providers (Anthropic/OpenAI)
     #[arg(long, env = "CLOUD_LLM_API_KEY")]
@@ -139,6 +151,8 @@ impl fmt::Debug for AppConfig {
             .field("ollama_model", &self.ollama_model)
             .field("lmstudio_url", &self.lmstudio_url)
             .field("lmstudio_model", &self.lmstudio_model)
+            .field("llamacpp_url", &self.llamacpp_url)
+            .field("llamacpp_model", &self.llamacpp_model)
             .field("cloud_llm_api_key", &redact_option(&self.cloud_llm_api_key))
             .field("cloud_llm_model", &self.cloud_llm_model)
             .field("anthropic_api_url", &self.anthropic_api_url)
@@ -177,6 +191,8 @@ mod tests {
             ollama_model: "qwen3-coder:30b".into(),
             lmstudio_url: "http://localhost:1234".into(),
             lmstudio_model: None,
+            llamacpp_url: "http://localhost:8080".into(),
+            llamacpp_model: None,
             cloud_llm_api_key: Some("sk-secret".into()),
             cloud_llm_model: None,
             anthropic_api_url: "https://api.anthropic.com".into(),
@@ -200,5 +216,17 @@ mod tests {
     #[test]
     fn test_default_llm_provider() {
         assert_eq!(LlmProvider::default(), LlmProvider::Ollama);
+    }
+
+    #[test]
+    fn test_llamacpp_provider_variant() {
+        use clap::ValueEnum;
+        let variants: Vec<LlmProvider> = LlmProvider::value_variants().to_vec();
+        assert!(variants.contains(&LlmProvider::LlamaCpp));
+    }
+
+    #[test]
+    fn test_llamacpp_provider_display() {
+        assert_eq!(format!("{}", LlmProvider::LlamaCpp), "llamacpp");
     }
 }

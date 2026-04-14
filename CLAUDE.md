@@ -1,7 +1,7 @@
 # SlackMongoBot — CLAUDE.md
 
 ## Project Overview
-NL-to-MongoDB query bot with Web UI and Slack integration. Actix-web backend with embedded vanilla JS/HTML frontend. 4 LLM providers: Ollama (default), LM Studio, Anthropic Claude, OpenAI GPT. NL parsing via direct HTTP calls (reqwest). Single binary deployment. Default database: `movies` (14+ collections auto-discovered via runtime introspection). Full aggregate pipeline support ($group, $lookup, $unwind, $bucket, $facet). Raw pipeline/filter passthrough for native MongoDB queries. 121 unit tests, 22 source files, 17 frontend files.
+NL-to-MongoDB query bot with Web UI and Slack integration. Actix-web backend with embedded vanilla JS/HTML frontend. 5 LLM providers: Ollama (default), LM Studio, llama.cpp, Anthropic Claude, OpenAI GPT. NL parsing via direct HTTP calls (reqwest). Single binary deployment. Default database: `movies` (14+ collections auto-discovered via runtime introspection). Full aggregate pipeline support ($group, $lookup, $unwind, $bucket, $facet). Raw pipeline/filter passthrough for native MongoDB queries. 123 unit tests, 22 source files, 17 frontend files.
 
 ## Build & Run
 ```bash
@@ -38,7 +38,7 @@ build.rs            — assembles frontend into $OUT_DIR/index.html
 - Shared state: `web::Data<AppState>` across actix workers
 - Frontend: `build.rs` assembles shell HTML + CSS + JS into `$OUT_DIR/index.html`, embedded via `include_str!()`
 - Error handling: `thiserror` + sanitized HTTP responses (internal errors logged, safe messages sent to client)
-- LLM: 4 providers — Ollama (default), LM Studio (OpenAI-compatible), Anthropic Claude, OpenAI GPT. LM Studio and OpenAI share `call_openai_compatible()` implementation
+- LLM: 5 providers — Ollama (default), LM Studio (OpenAI-compatible), llama.cpp (`llama-server`, OpenAI-compatible), Anthropic Claude, OpenAI GPT. LM Studio, llama.cpp, and OpenAI share `call_openai_compatible()` implementation
 - Safety: field whitelist from schema, operation whitelist, injection detection, $expr safety validation, accumulator whitelist
 - Query Advisor: `domain/query_advisor.rs` — 25 validation rules (unbounded, missing index, $ne/$nin, regex, aggregate, lookup, $or, raw passthrough, destructive ops, etc.)
 - Aggregate pipeline: `ParsedQuery` has typed fields for `group_by`, `lookup`, `unwind`, `bucket`, `facet`. Executor builds full pipeline in order: `$match` → `$lookup` → `$unwind` → `$group` → `$bucket` → `$facet` → `$sort` → `$limit` → `$project`
@@ -67,7 +67,7 @@ build.rs            — assembles frontend into $OUT_DIR/index.html
 - `dotenvy 0.15` — .env file loading
 - `chrono 0.4` — date parsing and coercion
 - `dashmap 6.1` — lock-free concurrent schema cache
-- No `ollama-rs` — all 4 LLM providers use direct HTTP via reqwest
+- No `ollama-rs` — all 5 LLM providers use direct HTTP via reqwest
 
 ## Endpoints
 - `GET /` — embedded frontend

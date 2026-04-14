@@ -5,6 +5,7 @@ use crate::error::AppError;
 /// LLM client supporting multiple providers:
 /// - Ollama (local, default)
 /// - LM Studio (local, OpenAI-compatible API)
+/// - llama.cpp (local, OpenAI-compatible `llama-server`)
 /// - Anthropic Claude (cloud)
 /// - OpenAI GPT (cloud)
 pub struct LlmClient {
@@ -15,6 +16,8 @@ pub struct LlmClient {
     ollama_url: String,
     lmstudio_url: String,
     lmstudio_model: Option<String>,
+    llamacpp_url: String,
+    llamacpp_model: Option<String>,
     anthropic_api_url: String,
     openai_api_url: String,
     api_key: Option<String>,
@@ -27,6 +30,8 @@ impl LlmClient {
             LlmProvider::Ollama => config.ollama_model.clone(),
             LlmProvider::LmStudio => config.lmstudio_model.clone()
                 .or_else(|| config.cloud_llm_model.clone())
+                .unwrap_or_else(|| "default".to_string()),
+            LlmProvider::LlamaCpp => config.llamacpp_model.clone()
                 .unwrap_or_else(|| "default".to_string()),
             _ => config.cloud_llm_model.clone()
                 .unwrap_or_else(|| "default".to_string()),
@@ -42,6 +47,8 @@ impl LlmClient {
             ollama_url: config.ollama_url.clone(),
             lmstudio_url: config.lmstudio_url.clone(),
             lmstudio_model: config.lmstudio_model.clone(),
+            llamacpp_url: config.llamacpp_url.clone(),
+            llamacpp_model: config.llamacpp_model.clone(),
             anthropic_api_url: config.anthropic_api_url.clone(),
             openai_api_url: config.openai_api_url.clone(),
             api_key: config.cloud_llm_api_key.clone(),
@@ -63,6 +70,7 @@ impl LlmClient {
         let raw = match self.provider {
             LlmProvider::Ollama => self.call_ollama(&prompt, model_override).await?,
             LlmProvider::LmStudio => self.call_lmstudio(&prompt, model_override).await?,
+            LlmProvider::LlamaCpp => self.call_llamacpp(&prompt, model_override).await?,
             LlmProvider::Anthropic => self.call_anthropic(&prompt, model_override).await?,
             LlmProvider::OpenAI => self.call_openai(&prompt, model_override).await?,
         };
@@ -79,6 +87,10 @@ impl LlmClient {
                 .or(self.lmstudio_model.as_deref())
                 .unwrap_or(&self.model)
                 .to_string(),
+            LlmProvider::LlamaCpp => model_override
+                .or(self.llamacpp_model.as_deref())
+                .unwrap_or(&self.model)
+                .to_string(),
             _ => model_override.unwrap_or(&self.model).to_string(),
         }
     }
@@ -88,6 +100,7 @@ impl LlmClient {
         match self.provider {
             LlmProvider::Ollama => self.list_ollama_models().await,
             LlmProvider::LmStudio => self.list_openai_compat_models(&self.lmstudio_url).await,
+            LlmProvider::LlamaCpp => self.list_openai_compat_models(&self.llamacpp_url).await,
             LlmProvider::OpenAI => self.list_openai_compat_models(&self.openai_api_url).await,
             LlmProvider::Anthropic => {
                 // Anthropic doesn't have a model list API — return common models
@@ -160,6 +173,19 @@ impl LlmClient {
             .unwrap_or(&self.model);
 
         tracing::debug!(provider = "lmstudio", model = %model, "Calling LLM");
+
+        self.call_openai_compatible(&url, model, prompt, None).await
+    }
+
+    // ── llama.cpp (OpenAI-compatible server) ────────────────────
+
+    async fn call_llamacpp(&self, prompt: &str, model_override: Option<&str>) -> Result<String, AppError> {
+        let url = format!("{}/v1/chat/completions", self.llamacpp_url.trim_end_matches('/'));
+        let model = model_override
+            .or(self.llamacpp_model.as_deref())
+            .unwrap_or(&self.model);
+
+        tracing::debug!(provider = "llamacpp", model = %model, "Calling LLM");
 
         self.call_openai_compatible(&url, model, prompt, None).await
     }
