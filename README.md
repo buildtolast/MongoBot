@@ -106,6 +106,14 @@ The server is built on actix-web 4 (with actix-cors for CORS preflight handling)
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed diagrams, data flows, and design decisions.
 
+## Roadmap
+
+See [NextSteps.md](NextSteps.md) for the approved design of the next three commits:
+
+1. **Phase 1 (`v0.5.0`)** — 👍/👎 feedback buttons + `query_feedback` MongoDB collection + JSONL/DPO export endpoints
+2. **Phase 2 (`v0.5.1`)** — In-context few-shot injection: retrieve top-K similar past liked/corrected examples and inject them into every LLM prompt (Ollama embeddings + cosine similarity, works on all 5 providers)
+3. **Phase 3 (`v0.5.2`)** — `training/` directory with MLX (Apple Silicon) + Unsloth (NVIDIA) LoRA fine-tuning scripts, GGUF export, Ollama import, and before/after evaluator
+
 ## Docker
 
 ```bash
