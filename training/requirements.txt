@@ -1,0 +1,13 @@
+# Base dependencies for the fine-tuning pipeline.
+# Install with: pip install -r requirements.txt
+#
+# Platform-specific packages (install ONE of these):
+#   Apple Silicon: pip install mlx-lm
+#   NVIDIA CUDA:   pip install unsloth trl datasets bitsandbytes
+#
+# llama.cpp is required by export_to_ollama.sh — clone separately:
+#   git clone https://github.com/ggerganov/llama.cpp
+#   cd llama.cpp && make
+
+requests>=2.31.0
+pytest>=7.4.0

@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+
+# Pipeline artifacts
+dataset.jsonl
+adapters/
+lora_adapter/
+_export_workspace/
+*.gguf
+evaluation_*.json
+evaluation_*.md
