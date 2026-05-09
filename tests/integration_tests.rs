@@ -7,7 +7,7 @@
 //!
 //! Run with: cargo test --test integration_tests -- --test-threads=1
 //! Or via: bash tests/query_tests.sh (bash version)
-
+//!
 use serde_json::{json, Value};
 
 const BASE_URL: &str = "http://localhost:3000";
@@ -476,4 +476,286 @@ async fn preview_mode_includes_raw_llm_response() {
     );
     let raw = r["raw_llm_response"].as_str().unwrap_or("");
     assert!(!raw.is_empty(), "raw_llm_response in preview should not be empty");
+}
+
+// ═══════════════════════════════════════════════════════════════
+// SECTION 9: Feedback API
+// ═══════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn feedback_submit_like() {
+    let client = reqwest::Client::new();
+    let body = json!({
+        "feedback": "liked",
+        "nl_query": "show me all movies",
+        "provider": "ollama",
+        "model": "qwen3-coder:30b",
+        "raw_llm_response": "{}",
+        "parsed_query": {
+            "collection": "movies",
+            "operation": "find",
+            "filters": [],
+            "projection": [],
+            "sort": null,
+            "limit": 100,
+            "document": null,
+            "update_fields": null,
+            "update_many": false,
+            "delete_many": false,
+            "group_by": null,
+            "lookup": null,
+            "unwind": null,
+            "facet": null,
+            "bucket": null,
+            "or_filters": [],
+            "text_search": null,
+            "expr": null,
+            "raw_pipeline": null,
+            "raw_filter": null
+        },
+        "user_edited_query": null,
+        "mongo_query": "db.movies.find({})",
+        "executed": true,
+        "result_count": 10,
+        "schema_snapshot": "movies(title:string,...)"
+    });
+    let resp = client.post(format!("{BASE_URL}/api/feedback"))
+        .json(&body)
+        .send()
+        .await
+        .expect("Failed to submit feedback");
+    assert!(resp.status().is_success());
+    let res_json: Value = resp.json().await.unwrap();
+    assert!(res_json.get("id").is_some());
+}
+
+#[tokio::test]
+async fn feedback_get_stats() {
+    let client = reqwest::Client::new();
+    let resp = client.get(format!("{BASE_URL}/api/feedback/stats"))
+        .send()
+        .await
+        .expect("Failed to get stats");
+    assert!(resp.status().is_success());
+    let res_json: Value = resp.json().await.unwrap();
+    assert!(res_json.get("total").is_some());
+}
+
+#[tokio::test]
+async fn feedback_export_jsonl() {
+    let client = reqwest::Client::new();
+    let resp = client.get(format!("{BASE_URL}/api/feedback/export?format=jsonl"))
+        .send()
+        .await
+        .expect("Failed to export feedback");
+    assert!(resp.status().is_success());
+    let text = resp.text().await.unwrap();
+    if !text.is_empty() {
+        for line in text.lines() {
+            let parsed: Value = serde_json::from_str(line).expect("Invalid JSONL line");
+            assert!(parsed.get("messages").is_some());
+        }
+    }
+}
+
+#[tokio::test]
+async fn feedback_export_dpo_jsonl() {
+    let client = reqwest::Client::new();
+    let resp = client.get(format!("{BASE_URL}/api/feedback/export?format=dpo-jsonl&type=corrected"))
+        .send()
+        .await
+        .expect("Failed to export DPO JSONL");
+    assert!(resp.status().is_success());
+    let text = resp.text().await.unwrap();
+    if !text.is_empty() {
+        for line in text.lines() {
+            let parsed: Value = serde_json::from_str(line).expect("Invalid JSONL line");
+            assert!(parsed.get("prompt").is_some());
+            assert!(parsed.get("chosen").is_some());
+            assert!(parsed.get("rejected").is_some());
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// SECTION 10: Feedback v0.5.0 — roundtrip and retrieval smoke
+// ═══════════════════════════════════════════════════════════════
+
+/// POST a liked feedback record, then GET /api/feedback/stats and verify
+/// the "liked" counter is present and the total is at least 1.
+#[tokio::test]
+async fn feedback_like_roundtrip() {
+    let client = reqwest::Client::new();
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+    let nl_query = format!("test like roundtrip {unique}");
+
+    let body = json!({
+        "feedback": "liked",
+        "nl_query": nl_query,
+        "provider": "test",
+        "model": "test",
+        "raw_llm_response": null,
+        "parsed_query": {
+            "collection": "movies",
+            "operation": "find",
+            "filters": [],
+            "projection": [],
+            "sort": null,
+            "limit": 100,
+            "document": null,
+            "update_fields": null,
+            "update_many": false,
+            "delete_many": false,
+            "group_by": null,
+            "lookup": null,
+            "unwind": null,
+            "facet": null,
+            "bucket": null,
+            "or_filters": [],
+            "text_search": null,
+            "expr": null,
+            "raw_pipeline": null,
+            "raw_filter": null
+        },
+        "user_edited_query": null,
+        "mongo_query": "db.movies.find({})",
+        "executed": true,
+        "result_count": 0,
+        "note": null,
+        "schema_snapshot": "movies(title:string)"
+    });
+
+    // Submit the feedback record.
+    let submit_resp = client
+        .post(format!("{BASE_URL}/api/feedback"))
+        .json(&body)
+        .send()
+        .await
+        .expect("Failed to submit feedback");
+    assert!(
+        submit_resp.status().is_success(),
+        "POST /api/feedback returned HTTP {}",
+        submit_resp.status()
+    );
+    let submit_json: Value = submit_resp.json().await.unwrap();
+    assert!(
+        submit_json.get("id").is_some(),
+        "feedback response should contain 'id'"
+    );
+
+    // Retrieve stats and verify the liked counter is present and non-zero.
+    let stats_resp = client
+        .get(format!("{BASE_URL}/api/feedback/stats"))
+        .send()
+        .await
+        .expect("Failed to get feedback stats");
+    assert!(
+        stats_resp.status().is_success(),
+        "GET /api/feedback/stats returned HTTP {}",
+        stats_resp.status()
+    );
+    let stats: Value = stats_resp.json().await.unwrap();
+    let total = stats["total"].as_u64().unwrap_or(0);
+    assert!(total > 0, "feedback stats total should be > 0 after insertion");
+    let liked = stats["by_type"]["liked"].as_u64().unwrap_or(0);
+    assert!(liked >= 1, "by_type.liked should be >= 1 after inserting a liked record");
+}
+
+/// Phase 2 smoke test: POST a liked feedback record, then submit a *similar*
+/// (but not identical) NL query via /api/query to exercise the find_similar_feedback
+/// retrieval path end-to-end without crashing.
+///
+/// We cannot verify prompt content directly, but we assert:
+///   (a) POST /api/feedback returns 200
+///   (b) POST /api/query with the similar query returns 200
+///   (c) raw_llm_response is present and non-empty in the query response
+#[tokio::test]
+async fn phase2_feedback_retrieval_smoke() {
+    let client = reqwest::Client::new();
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+    let seed_nl_query = format!("find users named alpha {unique}");
+
+    let feedback_body = json!({
+        "feedback": "liked",
+        "nl_query": seed_nl_query,
+        "provider": "test",
+        "model": "test",
+        "raw_llm_response": null,
+        "parsed_query": {
+            "collection": "movies",
+            "operation": "find",
+            "filters": [],
+            "projection": [],
+            "sort": null,
+            "limit": 100,
+            "document": null,
+            "update_fields": null,
+            "update_many": false,
+            "delete_many": false,
+            "group_by": null,
+            "lookup": null,
+            "unwind": null,
+            "facet": null,
+            "bucket": null,
+            "or_filters": [],
+            "text_search": null,
+            "expr": null,
+            "raw_pipeline": null,
+            "raw_filter": null
+        },
+        "user_edited_query": null,
+        "mongo_query": "db.movies.find({})",
+        "executed": true,
+        "result_count": 0,
+        "note": null,
+        "schema_snapshot": "movies(title:string)"
+    });
+
+    // Seed a feedback record so the retrieval path has something to find.
+    let fb_resp = client
+        .post(format!("{BASE_URL}/api/feedback"))
+        .json(&feedback_body)
+        .send()
+        .await
+        .expect("Failed to submit seed feedback");
+    assert!(
+        fb_resp.status().is_success(),
+        "Seed POST /api/feedback returned HTTP {}",
+        fb_resp.status()
+    );
+
+    // Submit a SIMILAR (not identical) query to exercise find_similar_feedback.
+    let model = std::env::var("TEST_MODEL").unwrap_or_else(|_| "qwen3-coder:30b".to_string());
+    let provider = std::env::var("TEST_PROVIDER").ok();
+    let similar_query = format!("show users called alpha {unique}");
+    let mut query_body = json!({ "query": similar_query, "model": model });
+    if let Some(p) = provider {
+        query_body["provider"] = json!(p);
+    }
+
+    let query_resp = client
+        .post(format!("{BASE_URL}/api/query"))
+        .json(&query_body)
+        .timeout(std::time::Duration::from_secs(180))
+        .send()
+        .await
+        .expect("Failed to send similar query");
+    assert!(
+        query_resp.status().is_success(),
+        "POST /api/query with similar text returned HTTP {}",
+        query_resp.status()
+    );
+
+    let query_json: Value = query_resp.json().await.unwrap();
+    let raw = query_json["raw_llm_response"].as_str().unwrap_or("");
+    assert!(
+        !raw.is_empty(),
+        "raw_llm_response should be present and non-empty in query response"
+    );
 }

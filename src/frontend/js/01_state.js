@@ -7,6 +7,9 @@ var currentAbortController = null;
 var AppState = {
     currentQuery: '',
     lastResults: null,
+    currentProvider: 'ollama',
+    currentModel: 'qwen3-coder:30b',
+    lastSchemaSnapshot: '',
     queryHistory: [],
     currentPage: 1,
     pageSize: 25,
@@ -19,7 +22,10 @@ var AppState = {
     sortDirection: 'asc',
     pendingWrite: null,
     approveMode: true,
-    pendingApproval: null
+    pendingApproval: null,
+    feedbackNoteVisible: false,
+    activeFeedbackId: null,
+    isFeedbackSubmitting: false
 };
 
 var HISTORY_KEY = 'mqb_query_history';

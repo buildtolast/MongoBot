@@ -89,6 +89,9 @@ async fn main() -> anyhow::Result<()> {
                     .route("/export", web::get().to(handlers::export::handle_export))
                     .route("/schemas", web::get().to(handlers::schemas::list_schemas))
                     .route("/schemas/refresh", web::post().to(handlers::schemas::refresh_schemas))
+                    .route("/feedback", web::post().to(handlers::feedback::submit_feedback))
+                    .route("/feedback/stats", web::get().to(handlers::feedback::get_feedback_stats))
+                    .route("/feedback/export", web::get().to(handlers::feedback::export_feedback))
             )
 
             // === WebSocket ===

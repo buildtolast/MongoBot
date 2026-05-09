@@ -5,3 +5,4 @@ pub mod schemas;
 pub mod slack_commands;
 pub mod slack_actions;
 pub mod ws;
+pub mod feedback;

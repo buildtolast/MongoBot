@@ -1,8 +1,9 @@
 use actix_web::{web, HttpResponse};
 use std::time::Instant;
+use chrono::Utc;
 
 use crate::domain::executor;
-use crate::domain::models::{ConfirmRequest, ExecutionTiming, QueryRequest, QueryResponse};
+use crate::domain::models::{ConfirmRequest, ExecutionTiming, QueryRequest, QueryResponse, FeedbackType, QueryFeedback};
 use crate::domain::query_advisor;
 use crate::error::AppError;
 use crate::state::AppState;
@@ -22,11 +23,25 @@ pub async fn handle_query(
     let provider_override = body.provider.as_deref()
         .map(crate::infra::llm::parse_provider_str)
         .transpose()?;
+
     let llm_start = Instant::now();
+
+    // --- Few-shot retrieval ---
+    let mut examples = Vec::new();
+    if state.config.enable_feedback_retrieval {
+        if let Ok(embedding) = state.llm.embed_text(&body.query).await {
+            if let Ok(similar_docs) = state.mongo.find_similar_feedback(&embedding, state.config.feedback_top_k).await {
+                examples = similar_docs.into_iter()
+                    .filter_map(|doc| mongodb::bson::from_document::<QueryFeedback>(doc).ok())
+                    .collect();
+            }
+        }
+    }
+
+    let prompt = crate::infra::llm::build_prompt_with_examples(&body.query, &schema_context, &examples);
     let (parsed, raw_llm_response, model_used) = state
         .llm
-        .parse_query(&body.query, &schema_context, model_override, provider_override)
-        .await?;
+        .call_llm_with_prompt(&prompt, model_override, provider_override).await?;
     let llm_parse_ms = llm_start.elapsed().as_millis() as u64;
 
     tracing::info!(
@@ -62,7 +77,7 @@ pub async fn handle_query(
                 results: serde_json::json!(null),
                 count: 0,
                 execution_ms: total_ms,
-                mongo_query,
+                mongo_query: mongo_query.clone(),
                 index_analysis,
                 advice,
                 requires_confirmation: false,
@@ -76,6 +91,7 @@ pub async fn handle_query(
                     response_build_ms,
                     total_ms,
                 }),
+                schema_snapshot: Some(state.schema_context()),
             }));
         }
     }
@@ -118,7 +134,7 @@ pub async fn handle_query(
             results: preview_results,
             count: preview_count,
             execution_ms: total_ms,
-            mongo_query,
+            mongo_query: mongo_query.clone(),
             index_analysis: None,
             advice,
             requires_confirmation: true,
@@ -132,6 +148,7 @@ pub async fn handle_query(
                 response_build_ms,
                 total_ms,
             }),
+            schema_snapshot: Some(state.schema_context()),
         };
 
         return Ok(HttpResponse::Ok().json(response));
@@ -157,7 +174,7 @@ pub async fn handle_query(
         results: results_json,
         count,
         execution_ms: total_ms,
-        mongo_query,
+        mongo_query: mongo_query.clone(),
         index_analysis,
         advice,
         requires_confirmation: false,
@@ -170,8 +187,9 @@ pub async fn handle_query(
             mongo_exec_ms,
             response_build_ms,
             total_ms,
-        }),
-    };
+            }),
+            schema_snapshot: Some(state.schema_context()),
+        };
 
     Ok(HttpResponse::Ok().json(response))
 }
@@ -223,19 +241,58 @@ pub async fn handle_execute(
         other => (query_result_len(other), query_result_to_json(other), None),
     };
 
+    // Build response
     let response = QueryResponse {
         parsed: parsed.clone(),
         results: results_json,
         count,
         execution_ms,
-        mongo_query,
+        mongo_query: mongo_query.clone(),
         index_analysis,
         advice,
         requires_confirmation: false,
         affected_count,
         raw_llm_response: None,
         timing: None,
+        schema_snapshot: Some(state.schema_context()),
     };
+
+    // --- Auto-capture feedback if a correction was made ---
+    if let (Some(original), Some(ctx)) = (&body.original_parsed, &body.context) {
+        if ctx.nl_query.len() > 4000 {
+            return Err(AppError::Validation("nl_query exceeds 4000 characters".into()));
+        }
+        if original != parsed {
+            let embedding = match state.llm.embed_text(&ctx.nl_query).await {
+                Ok(emb) => Some(emb),
+                Err(e) => {
+                    tracing::error!(error = %e, nl_query = %ctx.nl_query, "Failed to generate embedding for auto-captured feedback");
+                    None
+                }
+            };
+            let feedback = QueryFeedback {
+                id: mongodb::bson::oid::ObjectId::new(),
+                timestamp: Utc::now(),
+                nl_query: ctx.nl_query.clone(),
+                provider: ctx.provider.clone(),
+                model: ctx.model.clone(),
+                raw_llm_response: ctx.raw_llm_response.clone(),
+                parsed_query: original.clone(),
+                user_edited_query: Some(parsed.clone()),
+                mongo_query: mongo_query.clone(),
+                feedback: FeedbackType::Corrected,
+                note: None,
+                executed: true,
+                result_count: count,
+                schema_snapshot: state.schema_context(),
+                embedding,
+            };
+
+            if let Ok(bson_doc) = mongodb::bson::to_document(&feedback) {
+                let _ = state.mongo.insert_one("query_feedback", bson_doc).await;
+            }
+        }
+    }
 
     Ok(HttpResponse::Ok().json(response))
 }
@@ -257,7 +314,7 @@ pub(crate) fn query_result_to_json(result: &executor::QueryResult) -> serde_json
         executor::QueryResult::Documents(docs) => {
             let json_docs: Vec<serde_json::Value> = docs
                 .iter()
-                .map(|d| bson_doc_to_json(d))
+                .map(bson_doc_to_json)
                 .collect();
             serde_json::json!(json_docs)
         }

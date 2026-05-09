@@ -215,6 +215,30 @@
     align-items: center;
     justify-content: center;
     text-align: center;
-    padding: 40px 24px;
-    color: var(--text-secondary);
+/* --- Toast Notifications --- */
+
+.toast {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    padding: 12px 24px;
+    border-radius: var(--radius);
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow-lg);
+    z-index: 1000;
+    transition: opacity var(--transition);
+}
+
+.toast.error {
+    border-color: var(--danger);
+}
+
+.toast.success {
+    border-color: var(--success);
+}
+
+.toast[hidden] {
+    display: none;
 }

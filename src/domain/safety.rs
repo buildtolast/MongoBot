@@ -1,5 +1,9 @@
 use crate::domain::models::{CollectionSchema, ParsedQuery};
 
+/// Collections that are internal to the application and must never be exposed
+/// to user-facing NL queries, regardless of the unsafe_allow_all flag.
+const INTERNAL_COLLECTIONS: &[&str] = &["query_feedback"];
+
 /// Errors from safety validation.
 #[derive(Debug, thiserror::Error)]
 pub enum SafetyError {
@@ -52,6 +56,12 @@ impl SafetyChecker {
         query: &ParsedQuery,
         schema: Option<&CollectionSchema>,
     ) -> Result<(), SafetyError> {
+        // 0. Absolute denylist — internal collections are never queryable,
+        //    even with unsafe_allow_all enabled.
+        if INTERNAL_COLLECTIONS.contains(&query.collection.as_str()) {
+            return Err(SafetyError::UnknownCollection(query.collection.clone()));
+        }
+
         // 1. Check operation is allowed
         let op = query.operation.as_str();
         if !self.allowed_operations.iter().any(|a| a == op) {
@@ -131,8 +141,8 @@ impl SafetyChecker {
         match query.operation {
             crate::domain::models::QueryOperation::Insert => {
                 let doc = query.document.as_ref();
-                let is_empty = doc.map_or(true, |v| {
-                    v.as_object().map_or(true, |m| m.is_empty())
+                let is_empty = doc.is_none_or(|v| {
+                    v.as_object().is_none_or(|m| m.is_empty())
                 });
                 if is_empty {
                     return Err(SafetyError::WriteValidation {
@@ -149,8 +159,8 @@ impl SafetyChecker {
                     });
                 }
                 let fields = query.update_fields.as_ref();
-                let is_empty = fields.map_or(true, |v| {
-                    v.as_object().map_or(true, |m| m.is_empty())
+                let is_empty = fields.is_none_or(|v| {
+                    v.as_object().is_none_or(|m| m.is_empty())
                 });
                 if is_empty {
                     return Err(SafetyError::WriteValidation {
@@ -170,55 +180,62 @@ impl SafetyChecker {
             _ => {}
         }
 
-        // 5. If schema is available, validate fields exist
-        if let Some(schema) = schema {
-            let known_fields: Vec<&str> = schema.fields.iter().map(|f| f.name.as_str()).collect();
+        // 5. Validate collection and fields exist in schema.
+        //    If the collection is unknown and unsafe_allow_all is set, skip field validation.
+        //    If unsafe_allow_all is not set, reject unknown collections outright.
+        let schema = match schema {
+            Some(s) => s,
+            None if self.unsafe_allow_all => return Ok(()),
+            None => return Err(SafetyError::UnknownCollection(query.collection.clone())),
+        };
+        let known_fields: Vec<&str> = schema.fields.iter().map(|f| f.name.as_str()).collect();
 
-            let check_field = |field: &str| -> Result<(), SafetyError> {
-                if !field_matches(field, &known_fields) {
-                    return Err(SafetyError::UnknownField {
-                        field: field.to_string(),
-                        collection: query.collection.clone(),
-                    });
-                }
-                Ok(())
-            };
+        let check_field = |field: &str| -> Result<(), SafetyError> {
+            if !field_matches(field, &known_fields) {
+                return Err(SafetyError::UnknownField {
+                    field: field.to_string(),
+                    collection: query.collection.clone(),
+                });
+            }
+            Ok(())
+        };
 
-            for filter in &query.filters {
+        for filter in &query.filters {
+            check_field(&filter.field)?;
+        }
+        for proj in &query.projection {
+            check_field(proj)?;
+        }
+        if let Some(ref sort) = query.sort {
+            check_field(&sort.field)?;
+        }
+        // Validate or_filters fields
+        for branch in &query.or_filters {
+            for filter in branch {
                 check_field(&filter.field)?;
             }
-            for proj in &query.projection {
-                check_field(proj)?;
+        }
+        // Validate aggregate field references
+        if let Some(ref group) = query.group_by {
+            if !group.field.is_empty() && group.field != "null" {
+                check_field(&group.field)?;
             }
-            if let Some(ref sort) = query.sort {
-                check_field(&sort.field)?;
-            }
-            // Validate or_filters fields
-            for branch in &query.or_filters {
-                for filter in branch {
-                    check_field(&filter.field)?;
+            for acc in &group.accumulators {
+                if !acc.input_field.is_empty() && acc.input_field != "1" {
+                    check_field(acc.input_field.trim_start_matches('$'))?;
                 }
             }
-            // Validate aggregate field references
-            if let Some(ref group) = query.group_by {
-                if !group.field.is_empty() && group.field != "null" {
-                    check_field(&group.field)?;
-                }
-                for acc in &group.accumulators {
-                    if !acc.input_field.is_empty() && acc.input_field != "1" {
-                        check_field(acc.input_field.trim_start_matches('$'))?;
-                    }
-                }
-            }
-            if let Some(ref lookup) = query.lookup {
-                check_field(&lookup.local_field)?;
-            }
-            if let Some(ref unwind) = query.unwind {
-                check_field(unwind.trim_start_matches('$'))?;
-            }
-            if let Some(ref bucket) = query.bucket {
-                check_field(&bucket.group_by)?;
-            }
+        }
+        if let Some(ref lookup) = query.lookup {
+            check_field(&lookup.local_field)?;
+            check_field(&lookup.foreign_field)?;
+            check_field(&lookup.as_field)?;
+        }
+        if let Some(ref unwind) = query.unwind {
+            check_field(unwind.trim_start_matches('$'))?;
+        }
+        if let Some(ref bucket) = query.bucket {
+            check_field(&bucket.group_by)?;
         }
 
         Ok(())
@@ -793,5 +810,52 @@ mod tests {
             "$addFields": {"x": {"$function": {"body": "return 1", "args": [], "lang": "js"}}}
         })];
         assert!(validate_raw_pipeline(&stages, true).is_err());
+    }
+
+    #[test]
+    fn test_unknown_collection_errors() {
+        let checker = test_checker();
+        let query = ParsedQuery {
+            collection: "nonexistent".into(),
+            operation: QueryOperation::Find,
+            ..Default::default()
+        };
+        let result = checker.validate(&query, None);
+        assert!(matches!(result, Err(SafetyError::UnknownCollection(_))));
+    }
+
+    // ── INTERNAL_COLLECTIONS denylist ───────────────────────────
+
+    #[test]
+    fn test_rejects_query_feedback_collection() {
+        // query_feedback must be blocked even with unsafe_allow_all enabled
+        let checker = test_checker().with_unsafe_allow_all(true);
+        let query = ParsedQuery {
+            collection: "query_feedback".into(),
+            operation: QueryOperation::Find,
+            ..Default::default()
+        };
+        let result = checker.validate(&query, None);
+        assert!(
+            matches!(result, Err(SafetyError::UnknownCollection(_))),
+            "query_feedback must be rejected regardless of unsafe_allow_all"
+        );
+    }
+
+    #[test]
+    fn test_unsafe_allows_unknown_collection() {
+        // With unsafe_allow_all, a non-internal unknown collection should be allowed through
+        let checker = test_checker().with_unsafe_allow_all(true);
+        let query = ParsedQuery {
+            collection: "ad_hoc_collection".into(),
+            operation: QueryOperation::Find,
+            ..Default::default()
+        };
+        // No schema provided, but unsafe_allow_all bypasses the unknown-collection rejection
+        let result = checker.validate(&query, None);
+        assert!(
+            result.is_ok(),
+            "unsafe_allow_all should permit unknown non-internal collections"
+        );
     }
 }

@@ -31,7 +31,7 @@ function renderConfig(config) {
         ['Anthropic URL', llm.anthropic_api_url],
         ['OpenAI URL', llm.openai_api_url],
         ['Cloud Model', llm.cloud_llm_model],
-        ['Cloud API Key', llm.cloud_llm_api_key],
+        ['Cloud API Key', llm.cloud_api_key],
     ]);
 
     var db = config.mongodb || {};
@@ -76,6 +76,16 @@ function renderResults(response) {
     // Show results section
     emptyState.style.display = 'none';
     section.hidden = false;
+
+    // Handle feedback row visibility
+    var feedbackRow = document.getElementById('feedback-row');
+    var noteContainer = document.getElementById('feedback-note-container');
+    if (response.requires_confirmation === false) {
+        feedbackRow.hidden = false;
+        if (noteContainer) noteContainer.hidden = true;
+    } else {
+        feedbackRow.hidden = true;
+    }
 
     // Update stats
     var countEl = document.getElementById('result-count');
@@ -130,7 +140,7 @@ function renderResults(response) {
         var mongoToggle = document.querySelector('.mongo-toggle');
         if (mongoToggle) {
             mongoToggle.classList.add('open');
-            mongoToggle.innerHTML = 'MongoDB Query &#9662;';
+            mongoToggle.innerHTML = 'MongoDB Query &#9656;';
         }
 
         // Color the toggle based on index usage
@@ -173,9 +183,8 @@ function renderResults(response) {
         // For count queries, show a simple result card instead of a table
         var tbody = document.getElementById('results-tbody');
         var thead = document.getElementById('results-thead');
-        thead.innerHTML = '<tr><th>Operation</th><th>Collection</th><th>Result</th></tr>';
-        tbody.innerHTML = '<tr><td>' + operation + '</td><td>' + collection +
-            '</td><td style="font-weight:600;color:var(--accent)">' + response.results.count + '</td></tr>';
+        thead.innerHTML = '<tr class="no-sort"><th class="no-sort">Operation</th><th class="no-sort">Collection</th><th class="no-sort">Result</th></tr>';
+        tbody.innerHTML = '<tr><td colspan="3" style="text-align:center;padding:20px;"><div style="font-size:1.2rem;font-weight:600;">' + response.results.count + ' documents found</div></td></tr>';
         document.getElementById('pagination').innerHTML = '';
     } else if (docs && docs.length > 0) {
         renderTable(docs);
@@ -184,7 +193,7 @@ function renderResults(response) {
         var tbody2 = document.getElementById('results-tbody');
         var thead2 = document.getElementById('results-thead');
         thead2.innerHTML = '';
-        tbody2.innerHTML = '<tr><td style="padding:20px;color:var(--text-secondary)">No documents found matching your query</td></tr>';
+        tbody2.innerHTML = '<tr><td style="padding:20px;color:var(--text-muted);text-align:center;">No documents found matching your query</td></tr>';
         document.getElementById('pagination').innerHTML = '';
     }
 }
@@ -195,7 +204,7 @@ function renderTable(documents) {
 
     if (!documents || documents.length === 0) {
         thead.innerHTML = '';
-        tbody.innerHTML = '<tr><td style="padding:20px;color:var(--text-muted)">No documents</td></tr>';
+        tbody.innerHTML = '<tr><td style="padding:20px;color:var(--text-muted);text-align:center;">No documents</td></tr>';
         document.getElementById('pagination').innerHTML = '';
         return;
     }
@@ -371,23 +380,10 @@ function renderWriteResult(response) {
     // Show write result in table
     var thead = document.getElementById('results-thead');
     var tbody = document.getElementById('results-tbody');
-    thead.innerHTML = '<tr><th>Operation</th><th>Collection</th><th>Matched</th><th>Modified</th><th>Status</th></tr>';
+    thead.innerHTML = '<tr class="no-sort"><th class="no-sort">Operation</th><th class="no-sort">Collection</th><th class="no-sort">Matched</th><th class="no-sort">Modified</th><th class="no-sort">Status</th></tr>';
 
     var wr = response.results || {};
-    tbody.innerHTML = '<tr>' +
-        '<td>' + (response.parsed ? response.parsed.operation : '') + '</td>' +
-        '<td>' + (response.parsed ? response.parsed.collection : '') + '</td>' +
-        '<td>' + (wr.matched_count || wr.deleted_count || 0) + '</td>' +
-        '<td>' + (wr.modified_count || wr.inserted_id ? 1 : wr.deleted_count || 0) + '</td>' +
-        '<td style="color:var(--success)">Success</td>' +
-        '</tr>';
-    document.getElementById('pagination').innerHTML = '';
-
-    // Update parsed query
-    var parsedEl = document.getElementById('parsed-query-json');
-    if (response.parsed) {
-        parsedEl.textContent = JSON.stringify(response.parsed, null, 2);
-    }
+    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:20px;"><div style="font-size:1.2rem;font-weight:600;">Write Operation Successful</div></td></tr>';
 }
 
 function renderSchemas(schemas) {
@@ -559,15 +555,26 @@ function createPageBtn(num, currentPage) {
     return btn;
 }
 
-function showError(message) {
-    var toast = document.getElementById('error-toast');
-    toast.textContent = message;
-    toast.hidden = false;
-    toast.className = 'toast';
-    clearTimeout(toast._timer);
-    toast._timer = setTimeout(function() {
-        toast.hidden = true;
-    }, 5000);
+function showToast(msg, type) {
+    var container = document.getElementById('toast-container');
+    if (!container) {
+        container = document.createElement('div');
+        container.id = 'toast-container';
+        document.body.appendChild(container);
+    }
+
+    var toast = document.createElement('div');
+    toast.className = 'toast ' + type;
+    toast.textContent = msg;
+
+    container.appendChild(toast);
+
+    setTimeout(function() {
+        toast.classList.add('fade-out');
+        setTimeout(function() {
+            toast.remove();
+        }, 300);
+    }, 3000);
 }
 
 function showLoading(isLoading) {

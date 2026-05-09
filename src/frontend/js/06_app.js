@@ -49,7 +49,7 @@
                 if (schemas && schemas.length > 0) {
                     AppState.schemas = schemas;
                     renderSchemas(schemas);
-                    showError('Schemas refreshed: ' + schemas.length + ' collections');
+                    showToast('Schemas refreshed: ' + schemas.length + ' collections', 'success');
                 }
                 btn.classList.remove('spinning');
                 btn.disabled = false;
@@ -141,7 +141,7 @@
             if (AppState.loading) {
                 abortCurrentQuery();
                 showLoading(false);
-                showError('Query aborted');
+                showToast('Query aborted', 'info');
                 return;
             }
 
@@ -295,6 +295,50 @@
                 showLoading(false);
             });
         });
+
+        // Feedback handlers
+        document.getElementById('feedback-like').addEventListener('click', function() {
+            sendFeedback('liked');
+        });
+
+        document.getElementById('feedback-dislike').addEventListener('click', function() {
+            document.getElementById('feedback-note-container').hidden = false;
+        });
+
+        document.getElementById('feedback-submit-note').addEventListener('click', function() {
+            var noteInput = document.getElementById('feedback-note');
+            var note = noteInput.value.trim();
+            sendFeedback('disliked', note);
+        });
+
+        function sendFeedback(type, note) {
+            var results = AppState.lastResults;
+            if (!results || !results.parsed) return;
+
+            var feedbackBody = {
+                feedback: type,
+                nl_query: AppState.currentQuery,
+                provider: AppState.currentProvider,
+                model: AppState.currentModel,
+                raw_llm_response: results.raw_llm_response,
+                parsed_query: results.parsed,
+                user_edited_query: null,
+                mongo_query: results.mongo_query,
+                executed: true,
+                result_count: results.count || 0,
+                schema_snapshot: results.schema_snapshot || '',
+                note: note || null
+            };
+
+            submitFeedback(feedbackBody).then(function() {
+                showToast('Feedback submitted!', 'success');
+                document.getElementById('feedback-row').hidden = true;
+                document.getElementById('feedback-note-container').hidden = true;
+                document.getElementById('feedback-note').value = '';
+            }).catch(function(err) {
+                showToast('Feedback failed: ' + err.message, 'error');
+            });
+        }
     }
 
     function showConfirmModal(response) {
@@ -377,7 +421,7 @@
     function downloadBackup(format, response) {
         var data = AppState.pendingBackupData;
         if (!Array.isArray(data) || data.length === 0) {
-            showError('No data to backup');
+            showToast('No data to backup', 'error');
             return;
         }
 
@@ -557,7 +601,7 @@
         try {
             parsedJson = JSON.parse(parsedEl.textContent);
         } catch (e) {
-            showError('Invalid JSON in parsed query: ' + e.message);
+            showToast('Invalid JSON in parsed query: ' + e.message, 'error');
             return;
         }
 

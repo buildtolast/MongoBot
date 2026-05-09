@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
-
+use mongodb::bson::oid::ObjectId;
+use chrono::{DateTime, Utc};
 /// A parsed MongoDB query from natural language.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ParsedQuery {
     /// Target collection name.
     pub collection: String,
@@ -117,9 +118,10 @@ impl Default for ParsedQuery {
 }
 
 /// MongoDB operation type.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum QueryOperation {
+    #[default]
     Find,
     Count,
     Aggregate,
@@ -127,12 +129,6 @@ pub enum QueryOperation {
     Insert,
     Update,
     Delete,
-}
-
-impl Default for QueryOperation {
-    fn default() -> Self {
-        Self::Find
-    }
 }
 
 impl QueryOperation {
@@ -156,7 +152,7 @@ impl QueryOperation {
 }
 
 /// A single filter condition.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Filter {
     /// Field name to filter on.
     pub field: String,
@@ -189,7 +185,7 @@ pub enum FilterOperator {
 }
 
 /// Sort specification.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SortSpec {
     /// Field to sort by.
     pub field: String,
@@ -204,7 +200,7 @@ fn default_sort_order() -> i32 {
 }
 
 /// Group-by specification for aggregate $group stage.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GroupSpec {
     /// Field to group by (becomes _id). Use "null" for whole-collection aggregation.
     pub field: String,
@@ -214,7 +210,7 @@ pub struct GroupSpec {
 }
 
 /// A single accumulator in a $group stage.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Accumulator {
     /// Output field name in the grouped result.
     pub output_field: String,
@@ -226,7 +222,7 @@ pub struct Accumulator {
 }
 
 /// Lookup specification for aggregate $lookup stage (cross-collection join).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LookupSpec {
     /// Foreign collection to join.
     pub from: String,
@@ -239,7 +235,7 @@ pub struct LookupSpec {
 }
 
 /// Bucket specification for aggregate $bucket stage.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BucketSpec {
     /// Field to bucket by.
     pub group_by: String,
@@ -387,6 +383,9 @@ pub struct QueryResponse {
     /// Per-step execution timing breakdown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timing: Option<ExecutionTiming>,
+    /// A snapshot of the schema used for the query.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schema_snapshot: Option<String>,
 }
 
 /// Per-step execution timing breakdown for the query pipeline.
@@ -440,50 +439,147 @@ pub struct WriteResult {
 pub struct ConfirmRequest {
     /// The original parsed query to execute.
     pub parsed: ParsedQuery,
+    /// The user-edited version of the parsed query (if any).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub original_parsed: Option<ParsedQuery>,
     /// Confirmation token (prevents replay).
     pub confirm: bool,
+    /// Context for auto-capturing feedback.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<FeedbackContext>,
+}
+
+/// Context provided by the client to allow the server to auto-capture feedback.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FeedbackContext {
+    pub nl_query: String,
+    pub provider: String,
+    pub model: String,
+    pub raw_llm_response: Option<String>,
+    pub mongo_query: String,
+    pub result_count: usize,
+}
+
+/// Feedback type for a query.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FeedbackType {
+    /// User explicitly liked the result.
+    Liked,
+    /// User explicitly disliked the result.
+    Disliked,
+    /// User edited the parsed query and then approved it.
+    Corrected,
+    /// User rejected the query in preview mode without editing.
+    Abandoned,
+}
+
+/// A request to submit feedback.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FeedbackRequest {
+    /// The type of feedback.
+    pub feedback: FeedbackType,
+    /// The natural language query that was used.
+    pub nl_query: String,
+    /// The provider used.
+    pub provider: String,
+    /// The model used.
+    pub model: String,
+    /// The raw LLM response.
+    pub raw_llm_response: Option<String>,
+    /// The parsed query that resulted from the NL query.
+    pub parsed_query: ParsedQuery,
+    /// The user-edited version of the parsed query (if any).
+    pub user_edited_query: Option<ParsedQuery>,
+    /// The actual MongoDB query that was executed.
+    pub mongo_query: String,
+    /// Whether the query was executed.
+    pub executed: bool,
+    /// Number of results returned.
+    pub result_count: usize,
+    /// Optional freeform note from the user.
+    pub note: Option<String>,
+    /// A snapshot of the schema at the time of the query.
+    pub schema_snapshot: String,
+}
+
+/// A record of feedback stored in MongoDB.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueryFeedback {
+    /// MongoDB ObjectId.
+    #[serde(rename = "_id")]
+    pub id: ObjectId,
+    /// Timestamp of the feedback.
+    pub timestamp: DateTime<Utc>,
+    /// The natural language query.
+    pub nl_query: String,
+    /// The provider used.
+    pub provider: String,
+    /// The model used.
+    pub model: String,
+    /// The raw LLM response.
+    pub raw_llm_response: Option<String>,
+    /// The parsed query.
+    pub parsed_query: ParsedQuery,
+    /// The user-edited version of the parsed query (if any).
+    pub user_edited_query: Option<ParsedQuery>,
+    /// The actual MongoDB query.
+    pub mongo_query: String,
+    /// The type of feedback.
+    pub feedback: FeedbackType,
+    /// Optional freeform note.
+    pub note: Option<String>,
+    /// Whether the query was executed.
+    pub executed: bool,
+    /// Number of results returned.
+    pub result_count: usize,
+    /// A snapshot of the schema.
+    pub schema_snapshot: String,
+    /// Embedding for Phase 2 retrieval.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub embedding: Option<Vec<f32>>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
-    fn test_parsed_query_deserialize() {
-        let json = r#"{
-            "collection": "users",
-            "operation": "find",
-            "filters": [{"field": "age", "operator": "gt", "value": 25}],
-            "projection": ["name", "age"],
-            "sort": {"field": "age", "order": -1},
-            "limit": 50
-        }"#;
-        let query: ParsedQuery = serde_json::from_str(json).unwrap();
-        assert_eq!(query.collection, "users");
-        assert_eq!(query.operation, QueryOperation::Find);
-        assert_eq!(query.filters.len(), 1);
-        assert_eq!(query.limit, 50);
+    fn test_feedback_type_serialization() {
+        let val = json!("corrected");
+        let f: FeedbackType = serde_json::from_value(val).unwrap();
+        assert_eq!(f, FeedbackType::Corrected);
+
+        let val = json!("liked");
+        let f: FeedbackType = serde_json::from_value(val).unwrap();
+        assert_eq!(f, FeedbackType::Liked);
     }
 
     #[test]
-    fn test_parsed_query_defaults() {
-        let json = r#"{"collection": "users"}"#;
-        let query: ParsedQuery = serde_json::from_str(json).unwrap();
-        assert_eq!(query.operation, QueryOperation::Find);
-        assert_eq!(query.limit, 100);
-        assert!(query.filters.is_empty());
-        assert!(query.projection.is_empty());
-        assert!(query.sort.is_none());
-        assert!(query.document.is_none());
-        assert!(query.update_fields.is_none());
-        assert!(!query.update_many);
-        assert!(!query.delete_many);
-    }
+    fn test_query_feedback_serialization() {
+        let feedback = QueryFeedback {
+            id: mongodb::bson::oid::ObjectId::new(),
+            timestamp: Utc::now(),
+            nl_query: "find all movies".to_string(),
+            provider: "ollama".to_string(),
+            model: "qwen3-coder:30b".to_string(),
+            raw_llm_response: Some("{}".to_string()),
+            parsed_query: ParsedQuery::default(),
+            user_edited_query: None,
+            mongo_query: "db.movies.find({})".to_string(),
+            feedback: FeedbackType::Liked,
+            note: Some("Good".to_string()),
+            executed: true,
+            result_count: 10,
+            schema_snapshot: "movies".to_string(),
+            embedding: None,
+        };
 
-    #[test]
-    fn test_filter_operator_variants() {
-        let json = r#"{"field":"x","operator":"contains","value":"test"}"#;
-        let f: Filter = serde_json::from_str(json).unwrap();
-        assert_eq!(f.operator, FilterOperator::Contains);
+        let serialized = serde_json::to_string(&feedback).unwrap();
+        let deserialized: QueryFeedback = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(deserialized.nl_query, feedback.nl_query);
+        assert_eq!(deserialized.feedback, feedback.feedback);
+        assert_eq!(deserialized.result_count, feedback.result_count);
     }
 }

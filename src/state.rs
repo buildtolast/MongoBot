@@ -91,7 +91,7 @@ impl AppState {
         discover_schemas_from_db(&self.mongo, &self.schemas).await;
         merge_yaml_schemas(&self.schemas).await;
         let after = self.schemas.len();
-        let new_count = if after > before { after - before } else { 0 };
+        let new_count = after.saturating_sub(before);
         tracing::info!(total = after, new = new_count, "Schemas refreshed");
         after
     }
@@ -103,6 +103,11 @@ async fn discover_schemas_from_db(mongo: &MongoPool, schemas: &DashMap<String, C
         Ok(names) => {
             tracing::info!(count = names.len(), "Discovered collections from MongoDB");
             for name in names {
+                // Exclude internal collections from schema discovery so they
+                // are invisible to the LLM prompt and the schema browser.
+                if name == "query_feedback" {
+                    continue;
+                }
                 match mongo.introspect_collection(&name).await {
                     Ok(schema) => {
                         tracing::info!(

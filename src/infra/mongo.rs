@@ -7,6 +7,11 @@ use std::time::Duration;
 use crate::domain::models::{CollectionSchema, FieldDef, IndexInfo, IndexKey};
 use crate::error::AppError;
 
+/// Maximum number of feedback records to scan for cosine similarity.
+/// Chosen as a balance between recall and per-request memory/latency.
+/// Above this threshold, switch to a vector database (Atlas Vector Search, FAISS).
+const MAX_FEEDBACK_SCAN: i64 = 10_000;
+
 /// MongoDB connection pool wrapper.
 #[derive(Clone)]
 pub struct MongoPool {
@@ -53,16 +58,15 @@ impl MongoPool {
     }
 
     /// Execute a find query with optional filter, sort, limit, and projection.
-    pub async fn find_documents(
+    pub async fn find(
         &self,
         collection_name: &str,
         filter: Option<Document>,
         sort: Option<Document>,
         limit: Option<i64>,
         projection: Option<Document>,
-    ) -> Result<Vec<Document>, AppError> {
+    ) -> Result<mongodb::Cursor<Document>, AppError> {
         let coll = self.collection(collection_name);
-
         let mut find_opts = FindOptions::builder()
             .max_time(Duration::from_secs(30))
             .build();
@@ -77,11 +81,22 @@ impl MongoPool {
             find_opts.projection = Some(p);
         }
 
-        let mut cursor = coll
-            .find(filter.unwrap_or_default())
+        coll.find(filter.unwrap_or_default())
             .with_options(find_opts)
-            .await?;
+            .await
+            .map_err(|e| AppError::Internal(e.to_string()))
+    }
 
+    /// Collect documents into a Vec.
+    pub async fn find_documents(
+        &self,
+        collection_name: &str,
+        filter: Option<Document>,
+        sort: Option<Document>,
+        limit: Option<i64>,
+        projection: Option<Document>,
+    ) -> Result<Vec<Document>, AppError> {
+        let mut cursor = self.find(collection_name, filter, sort, limit, projection).await?;
         let mut results = Vec::new();
         use futures::TryStreamExt;
         while let Some(doc) = cursor.try_next().await? {
@@ -205,6 +220,22 @@ impl MongoPool {
         Ok(result.inserted_id.to_string())
     }
 
+    /// Alias for insert_document to support standard MongoDB naming.
+    pub async fn insert_one(&self, collection_name: &str, document: Document) -> Result<(), AppError> {
+        self.insert_document(collection_name, document).await.map(|_| ())
+    }
+
+    /// Find documents matching a filter.
+    /// Execute an aggregation pipeline.
+    pub async fn aggregate(
+        &self,
+        collection_name: &str,
+        pipeline: Vec<Document>,
+    ) -> Result<mongodb::Cursor<Document>, AppError> {
+        let coll = self.collection(collection_name);
+        coll.aggregate(pipeline).await.map_err(|e| AppError::Internal(e.to_string()))
+    }
+
     /// Update documents matching a filter.
     pub async fn update_documents(
         &self,
@@ -254,6 +285,58 @@ impl MongoPool {
             .await?;
         Ok(values)
     }
+
+    /// Find top-K similar feedback records using cosine similarity.
+    /// Returns a list of feedback documents.
+    pub async fn find_similar_feedback(
+        &self,
+        query_embedding: &[f32],
+        k: usize,
+    ) -> Result<Vec<Document>, AppError> {
+        let collection = "query_feedback";
+        // Only retrieve liked or corrected examples
+        let filter = doc! { "feedback": { "$in": ["liked", "corrected"] } };
+
+        let sort = doc! { "timestamp": -1 };
+        let mut cursor = self
+            .find(collection, Some(filter), Some(sort), Some(MAX_FEEDBACK_SCAN), None)
+            .await?;
+        let mut results = Vec::new();
+        let mut scanned: usize = 0;
+        use futures::TryStreamExt;
+        while let Ok(Some(doc)) = cursor.try_next().await {
+            scanned += 1;
+            if let Some(emb_bson) = doc.get("embedding") {
+                if let Some(emb_array) = emb_bson.as_array() {
+                    let emb: Vec<f32> = emb_array.iter()
+                        .filter_map(|b| b.as_f64().map(|f| f as f32))
+                        .collect();
+                    if emb.len() == query_embedding.len() {
+                        let sim = cosine_similarity(query_embedding, &emb);
+                        results.push((sim, doc));
+                    }
+                }
+            }
+        }
+        if scanned >= MAX_FEEDBACK_SCAN as usize {
+            tracing::warn!(
+                "find_similar_feedback hit MAX_FEEDBACK_SCAN={}; consider migrating to a vector database",
+                MAX_FEEDBACK_SCAN
+            );
+        }
+
+        // Sort by similarity descending
+        results.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+
+        Ok(results.into_iter().take(k).map(|(_, doc)| doc).collect())
+    }
+}
+
+pub(crate) fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
+    let na: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let nb: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    dot / (na * nb + 1e-10)
 }
 
 /// Recursively collect field names and BSON type names from a document.
@@ -287,11 +370,9 @@ fn collect_field_types(
                 types.insert(full_key.clone(), "array".to_string());
                 // Dive into the first element to discover inner fields
                 // This enables dot-notation queries like "transactions.symbol"
-                if let Some(first) = arr.first() {
-                    if let Bson::Document(inner_doc) = first {
+                if let Some(Bson::Document(inner_doc)) = arr.first() {
                         collect_field_types(inner_doc, &full_key, types);
                     }
-                }
             }
             _ => {
                 types.entry(full_key).or_insert(type_name);
@@ -317,5 +398,45 @@ fn bson_type_name(value: &Bson) -> String {
             else { "object".to_string() }
         }
         _ => "unknown".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{cosine_similarity, MAX_FEEDBACK_SCAN};
+
+    #[test]
+    fn test_cosine_similarity() {
+        // Identical vectors → similarity of 1.0
+        let v = [1.0_f32, 2.0, 3.0];
+        let actual = cosine_similarity(&v, &v);
+        assert!((actual - 1.0).abs() < 1e-5, "identical vectors: expected ~1.0, got {actual}");
+
+        // Orthogonal vectors → similarity of 0.0
+        let a = [1.0_f32, 0.0];
+        let b = [0.0_f32, 1.0];
+        let actual = cosine_similarity(&a, &b);
+        assert!((actual - 0.0).abs() < 1e-5, "orthogonal vectors: expected ~0.0, got {actual}");
+
+        // Opposite vectors → similarity of -1.0
+        let a = [1.0_f32, 0.0];
+        let b = [-1.0_f32, 0.0];
+        let actual = cosine_similarity(&a, &b);
+        assert!((actual - (-1.0)).abs() < 1e-5, "opposite vectors: expected ~-1.0, got {actual}");
+
+        // Empty vectors → denominator collapses to 1e-10; result is 0.0 / 1e-10 = 0.0
+        let actual = cosine_similarity(&[], &[]);
+        assert!(actual.abs() < 1e-5, "empty vectors: expected ~0.0, got {actual}");
+    }
+
+    /// Tripwire: guards against accidentally setting MAX_FEEDBACK_SCAN too low or absurdly high.
+    /// If you change the constant, review the comment in mongo.rs about Atlas Vector Search / FAISS.
+    #[test]
+    fn test_find_similar_feedback_respects_max_scan_constant() {
+        assert!(
+            MAX_FEEDBACK_SCAN >= 1_000 && MAX_FEEDBACK_SCAN <= 100_000,
+            "MAX_FEEDBACK_SCAN={MAX_FEEDBACK_SCAN} is outside the safe range [1000, 100000]; \
+             see the constant's doc comment before changing it"
+        );
     }
 }

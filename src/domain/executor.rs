@@ -335,7 +335,7 @@ fn build_and_filter(filters: &[Filter], schema: Option<&CollectionSchema>) -> Re
     for (prefix, group_filters) in &array_groups {
         let is_array = schema
             .and_then(|s| s.fields.iter().find(|f| f.name == *prefix))
-            .map_or(false, |f| f.field_type == "array");
+            .is_some_and(|f| f.field_type == "array");
 
         if is_array && group_filters.len() >= 2 {
             // Array field with multiple conditions — use $elemMatch
@@ -797,12 +797,11 @@ pub fn analyze_index_usage(query: &ParsedQuery, schema: Option<&CollectionSchema
         }
 
         // Index is usable if at least the first key matches a filter field
-        if filter_fields.contains(&first_idx_field)
-            || sort_field == Some(first_idx_field)
+        if (filter_fields.contains(&first_idx_field)
+            || sort_field == Some(first_idx_field))
+            && best_match.as_ref().is_none_or(|(_, best)| matched > *best)
         {
-            if best_match.as_ref().map_or(true, |(_, best)| matched > *best) {
-                best_match = Some((idx.name.clone(), matched));
-            }
+            best_match = Some((idx.name.clone(), matched));
         }
     }
 
@@ -1047,7 +1046,7 @@ mod tests {
         }];
         let doc = build_and_filter(&filters, None).unwrap();
         let cond = doc.get_document("phone").unwrap();
-        assert_eq!(cond.get_bool("$exists").unwrap(), true);
+        assert!(cond.get_bool("$exists").unwrap());
     }
 
     #[test]

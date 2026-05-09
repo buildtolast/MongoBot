@@ -65,6 +65,14 @@
           <span id="result-time"></span>
           <span id="result-collection"></span>
         </div>
+        <div id="feedback-row" class="feedback-row" hidden>
+          <button id="feedback-like" class="feedback-btn" title="This was correct">👍</button>
+          <button id="feedback-dislike" class="feedback-btn" title="This was incorrect">👎</button>
+          <div id="feedback-note-container" class="feedback-note-container" hidden>
+            <input type="text" id="feedback-note" placeholder="What was wrong?" />
+            <button id="feedback-submit-note" class="icon-btn">Submit</button>
+          </div>
+        </div>
         <div class="export-buttons">
           <button id="export-csv" class="export-btn" title="Download CSV">CSV</button>
           <button id="export-json" class="export-btn" title="Download JSON">JSON</button>

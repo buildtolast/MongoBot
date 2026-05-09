@@ -2,9 +2,10 @@ use clap::{Parser, ValueEnum};
 use std::fmt;
 
 /// LLM provider selection
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, serde::Serialize, serde::Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum LlmProvider {
+    #[default]
     Ollama,
     Anthropic,
     OpenAI,
@@ -12,12 +13,6 @@ pub enum LlmProvider {
     LmStudio,
     #[value(alias = "llamacpp", alias = "llama")]
     LlamaCpp,
-}
-
-impl Default for LlmProvider {
-    fn default() -> Self {
-        Self::Ollama
-    }
 }
 
 impl fmt::Display for LlmProvider {
@@ -126,6 +121,22 @@ pub struct AppConfig {
     /// All queries behave as if preview=true. No data is read from or written to MongoDB.
     #[arg(long, env = "QUERY_ONLY", default_value = "false")]
     pub query_only: bool,
+
+    /// Model used for generating embeddings (for few-shot retrieval).
+    #[arg(long, env = "EMBEDDING_MODEL", default_value = "nomic-embed-text")]
+    pub embedding_model: String,
+
+    /// URL of the embedding server. Defaults to OLLAMA_URL if not set.
+    #[arg(long, env = "EMBEDDING_URL")]
+    pub embedding_url: Option<String>,
+
+    /// Number of similar examples to inject into the prompt.
+    #[arg(long, env = "FEEDBACK_TOP_K", default_value = "5")]
+    pub feedback_top_k: usize,
+
+    /// Whether to enable few-shot retrieval from query feedback.
+    #[arg(long, env = "ENABLE_FEEDBACK_RETRIEVAL", default_value = "true")]
+    pub enable_feedback_retrieval: bool,
 }
 
 fn default_allowed_ops() -> Vec<String> {
@@ -164,6 +175,10 @@ impl fmt::Debug for AppConfig {
             .field("dashboard_token", &redact_option(&self.dashboard_token))
             .field("unsafe_allow_all_operations", &self.unsafe_allow_all_operations)
             .field("query_only", &self.query_only)
+            .field("embedding_model", &self.embedding_model)
+            .field("embedding_url", &self.embedding_url)
+            .field("feedback_top_k", &self.feedback_top_k)
+            .field("enable_feedback_retrieval", &self.enable_feedback_retrieval)
             .finish()
     }
 }
@@ -204,6 +219,10 @@ mod tests {
             dashboard_token: Some("token123".into()),
             unsafe_allow_all_operations: false,
             query_only: false,
+            embedding_model: "nomic-embed-text".into(),
+            embedding_url: None,
+            feedback_top_k: 5,
+            enable_feedback_retrieval: true,
         };
         let debug_output = format!("{:?}", config);
         assert!(!debug_output.contains("xoxb-secret"));

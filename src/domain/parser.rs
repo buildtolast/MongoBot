@@ -35,7 +35,7 @@ pub(crate) fn validate_parsed_query(query: &ParsedQuery) -> Result<(), AppError>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::models::{QueryOperation, Filter, FilterOperator};
+    use crate::domain::models::{Filter, FilterOperator};
 
     #[test]
     fn test_validate_valid_query() {

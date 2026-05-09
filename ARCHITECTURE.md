@@ -6,7 +6,7 @@
 
 ## System Overview
 
-The Slack-Mongo Query Bot translates natural language questions into MongoDB queries using one of 4 LLM providers (Ollama default, LM Studio, Anthropic Claude, OpenAI GPT). Users interact through **two interfaces**:
+The Slack-Mongo Query Bot translates natural language questions into MongoDB queries using one of 5 LLM providers (Ollama default, LM Studio, llama.cpp, Anthropic Claude, OpenAI GPT). Users interact through **two interfaces**:
 
 1. **Web Dashboard** — Browser-based UI with a query bar, results table, and CSV/JSON download buttons
 2. **Slack Bot** — Slash commands (`/mongo`) and app mentions (`@query-bot`)
@@ -35,9 +35,10 @@ Slack:    User types /mongo find active users from last week → bot posts resul
 | Export JSON | `GET /api/export?format=json` | Re-runs query, streams JSON file download |
 | Schemas | `GET /api/schemas` | Lists available collections and fields |
 | Refresh Schemas | `POST /api/schemas/refresh` | Re-introspect MongoDB for new/changed collections |
-| Models | `GET /api/models` | List available models (provider-aware) |
+| Models | `GET /api/models` | List available models (accepts `?provider=<name>` for any of the 5 providers) |
+| Providers | `GET /api/providers` | List all 5 LLM providers |
 | Config | `GET /api/config` | Current configuration with secrets redacted |
-| WebSocket | `WS /ws/live` | Real-time query progress updates |
+| WebSocket | `WS /ws/live` | Real-time query progress updates (scaffold only — no progress events currently published to WS clients) |
 
 #### Slack Bot
 | Feature | Endpoint | Description |
@@ -54,7 +55,7 @@ Slack is **optional** — the web UI works standalone without any Slack configur
 
 Chosen over Axum because:
 - Proven in the GitWorkflowDashboard project with the same embedded-frontend pattern
-- `actix-ws` for WebSocket, `actix-governor` for rate limiting — familiar middleware stack
+- `actix-ws` for WebSocket — familiar middleware stack
 - `Arc<RwLock<T>>` shared state pattern already well-established
 - Same `build.rs` + `include_str!()` frontend embedding approach
 
@@ -90,7 +91,6 @@ App::new()
 - `actix-cors` — CORS preflight handling (OPTIONS requests)
 - `Auth` — Bearer token validation (optional, for `/api/*` routes)
 - `SlackVerify` — HMAC-SHA256 signing secret (for `/api/slack/*` routes only)
-- Rate limiting via `actix-governor`
 
 **Shared State:**
 ```rust
@@ -103,6 +103,9 @@ pub struct AppState {
     pub config: AppConfig,
 }
 // Wrapped as web::Data<Arc<RwLock<AppState>>>
+
+// For detailed information on how schemas and feedback are managed,
+// see [docs/MEMORY_ARCHITECTURE.md](docs/MEMORY_ARCHITECTURE.md).
 ```
 
 ### 3. Query Processing Pipeline
@@ -120,9 +123,10 @@ Both the Web UI and Slack handlers call into the **same** processing pipeline:
 └──────────┬────────────────┘
            ▼
 ┌─── 2. NLP Parser ────────┐
-│ 4 providers:             │
+│ 5 providers:             │
 │  Ollama (local, default) │
 │  LM Studio (local)       │
+│  llama.cpp (local)       │
 │  Anthropic Claude (cloud)│
 │  OpenAI GPT (cloud)      │
 │ NL → ParsedQuery struct  │
@@ -137,7 +141,7 @@ Both the Web UI and Slack handlers call into the **same** processing pipeline:
 └──────────┬───────────────┘
            ▼
 ┌─── 3b. Query Advisor ───┐
-│ 14 validation rules      │
+│ 25 rules (21 functions)  │
 │ Index usage analysis     │
 │ Performance warnings     │
 │ ($ne, $nin, unbounded)   │
@@ -178,10 +182,14 @@ Both the Web UI and Slack handlers call into the **same** processing pipeline:
 
 Collection schemas are auto-discovered from MongoDB at runtime via runtime introspection (sampling documents to infer field names and types, including array element introspection). Schemas are cached in a `DashMap` (lock-free concurrent hashmap). The schema provides field names, types, and descriptions that the LLM uses to generate accurate queries. Users can refresh schemas at runtime via `POST /api/schemas/refresh` to detect new collections without restarting.
 
-The default database is `movies`, with 14+ collections auto-discovered. The seed data includes:
-- `movies` (15 documents) — title, year, genre, rating, director, etc.
+The default database is `movies`, with 14+ collections auto-discovered at runtime. The seed data includes:
+- `movies` (16 documents) — title, year, genre, rating, director, etc.
 - `actors` (10 documents) — name, birth year, nationality, filmography
 - `reviews` (15 documents) — movie reference, reviewer, score, text
+- `employees` (5 documents)
+- `products` (3 documents)
+- `transactions` (1746 documents)
+- Plus MongoDB Atlas sample datasets
 
 All collections have indexes for efficient querying.
 
@@ -212,10 +220,11 @@ The natural language query is sent to the configured LLM provider via **direct H
 **Providers:**
 - **Ollama** (default) -- `/api/generate` with `format: "json"` enforced. Local, free, no internet required.
 - **LM Studio** -- OpenAI-compatible API at `/v1/chat/completions`. Local, free, runs at `localhost:1234`.
+- **llama.cpp** -- OpenAI-compatible API via `llama-server` binary at `localhost:8080`. Local, free, env vars `LLAMACPP_URL` (default `http://localhost:8080`) and `LLAMACPP_MODEL`.
 - **Anthropic Claude** -- `/v1/messages` with `x-api-key` header. Cloud, requires `CLOUD_LLM_API_KEY`.
 - **OpenAI GPT** -- `/v1/chat/completions` with Bearer auth. Cloud, requires `CLOUD_LLM_API_KEY`.
 
-LM Studio and OpenAI share a `call_openai_compatible()` implementation that handles the OpenAI chat completions format with `response_format: { "type": "json_object" }`.
+LM Studio, llama.cpp, and OpenAI share a `call_openai_compatible()` implementation in `src/infra/llm.rs` that handles the OpenAI chat completions format with `response_format: { "type": "json_object" }`.
 
 **Why Ollama is the default:**
 | Factor | Ollama (Local) | LM Studio (Local) | Cloud (Anthropic/OpenAI) |
@@ -263,7 +272,7 @@ Output (ParsedQuery):
 | Limit enforcement (default max: 10,000) | Unbounded queries |
 | Injection detection | `$where`, `__proto__`, `constructor` patterns |
 
-**Query Advisor (14 rules):** Runs after safety validation to provide warnings and optimization hints:
+**Query Advisor (25 rules, 21 check functions):** Runs after safety validation to provide warnings and optimization hints:
 - Unbounded query detection (no filters)
 - Large limit warnings (>1000)
 - Missing index warnings
@@ -343,7 +352,7 @@ src/frontend/
 | Query Inspector | Collapsible panel showing the `ParsedQuery` JSON the LLM generated |
 | MongoDB Query Viewer | Panel showing actual shell commands (`db.collection.find(...)`) |
 | Index Analysis | Shows which indexes are used per query |
-| Query Advisor | 14-rule analysis with warnings and optimization hints |
+| Query Advisor | 25-rule (21 check functions) analysis with warnings and optimization hints |
 | Model Selector | Switch LLM models at runtime without restart (provider-aware) |
 | Settings Panel | Gear icon opens modal showing all config with secrets redacted (`GET /api/config`) |
 | CSV Download | Button triggers file download via `/api/export?format=csv` |
@@ -401,17 +410,17 @@ User                    Slack                    Server
 ## External Dependencies
 
 ```
-┌─────────────────┐  ┌─────────────────┐  ┌──────────────────┐  ┌─────────────────┐
-│     Ollama      │  │   LM Studio     │  │     MongoDB      │  │  Slack API      │
-│  localhost:11434│  │  localhost:1234  │  │  localhost:27017  │  │  api.slack.com  │
-│                 │  │                 │  │                  │  │                 │
-│  qwen3-coder    │  │  OpenAI-compat  │  │  App database    │  │  (optional)     │
-│  JSON mode      │  │  chat/completns │  │  Read + write    │  │  Webhooks in    │
-│  ~200-500ms     │  │  ~200-500ms     │  │  Pool: 2-20 conn │  │  Results out    │
-│                 │  │                 │  │                  │  │                 │
-│  DEFAULT        │  │  ALTERNATIVE    │  │  REQUIRED        │  │  OPTIONAL       │
-│  No API costs   │  │  No API costs   │  │                  │  │                 │
-└─────────────────┘  └─────────────────┘  └──────────────────┘  └─────────────────┘
+┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐  ┌──────────────────┐  ┌─────────────────┐
+│     Ollama      │  │   LM Studio     │  │   llama.cpp     │  │     MongoDB      │  │  Slack API      │
+│  localhost:11434│  │  localhost:1234  │  │  localhost:8080 │  │  localhost:27017  │  │  api.slack.com  │
+│                 │  │                 │  │                 │  │                  │  │                 │
+│  qwen3-coder    │  │  OpenAI-compat  │  │  OpenAI-compat  │  │  App database    │  │  (optional)     │
+│  JSON mode      │  │  chat/completns │  │  chat/completns │  │  Read + write    │  │  Webhooks in    │
+│  ~200-500ms     │  │  ~200-500ms     │  │  ~200-500ms     │  │  Pool: 2-20 conn │  │  Results out    │
+│                 │  │                 │  │                 │  │                  │  │                 │
+│  DEFAULT        │  │  ALTERNATIVE    │  │  ALTERNATIVE    │  │  REQUIRED        │  │  OPTIONAL       │
+│  No API costs   │  │  No API costs   │  │  No API costs   │  │                  │  │                 │
+└─────────────────┘  └─────────────────┘  └─────────────────┘  └──────────────────┘  └─────────────────┘
 
 Cloud providers (one of, requires CLOUD_LLM_API_KEY):
   Anthropic Claude — api.anthropic.com (or ANTHROPIC_API_URL)
@@ -433,14 +442,14 @@ src/
 ├── infra/                 → External service clients
 │   ├── mongo.rs           → MongoPool: connect, find, count, distinct
 │   ├── slack.rs           → Slack API helpers (file upload, message post)
-│   └── llm.rs             → LlmClient: 4 providers (Ollama, LM Studio, Anthropic, OpenAI) via direct HTTP
+│   └── llm.rs             → LlmClient: 5 providers (Ollama, LM Studio, llama.cpp, Anthropic, OpenAI) via direct HTTP
 │
 ├── domain/                → Business logic (no framework dependencies)
 │   ├── models.rs          → ParsedQuery, Filter, QueryRequest/Response, ExportFormat, IndexInfo
 │   ├── parser.rs          → build_prompt(), parse_llm_response()
 │   ├── executor.rs        → ParsedQuery → BSON → MongoDB → QueryResult (date coercion, $elemMatch, filter merge)
 │   ├── safety.rs          → SafetyChecker: validate fields, ops, limits
-│   ├── query_advisor.rs   → analyze_query(): 14 validation rules, warnings, optimization hints
+│   ├── query_advisor.rs   → analyze_query(): 25 rules (21 check functions), warnings, optimization hints
 │   └── export.rs          → documents_to_csv(), documents_to_json()
 │
 ├── handlers/              → Actix-web request handlers
@@ -476,7 +485,7 @@ docs/                      → Reference documentation
 This project follows the **same architecture as GitWorkflowDashboard**:
 - Proven embedded-frontend pattern with `build.rs` + `include_str!()`
 - `Arc<RwLock<T>>` shared state across actix workers
-- `actix-ws` for WebSocket, `actix-governor` for rate limiting
+- `actix-ws` for WebSocket
 - Familiar middleware stack (auth, CORS, CSP, compression)
 - `tracing-actix-web` for structured logging
 - Constant-time auth via `subtle::ConstantTimeEq`

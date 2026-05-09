@@ -42,7 +42,7 @@ async function queryApi(queryText, model, provider) {
         if (err.name === 'AbortError') {
             throw err; // Don't show toast for user-initiated abort
         }
-        showError(err.message || 'Query failed');
+        showToast(err.message || 'Query failed', 'error');
         throw err;
     }
 }
@@ -90,22 +90,22 @@ function abortCurrentQuery() {
     }
 }
 
-async function executeWrite(parsedQuery) {
+async function submitFeedback(feedbackBody) {
     try {
-        var resp = await fetch(API_BASE + '/api/execute', {
+        var resp = await fetch(API_BASE + '/api/feedback', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ parsed: parsedQuery, confirm: true })
+            body: JSON.stringify(feedbackBody)
         });
         if (!resp.ok) {
             var errBody = await resp.text();
             var errMsg;
-            try { errMsg = JSON.parse(errBody).error || errBody; } catch(_) { errMsg = errBody; }
+            try { errMsg = JSON.parse(errBody).error || errBody; } catch(_) { errMsg = errBody || ('HTTP ' + resp.status); }
             throw new Error(errMsg);
         }
         return await resp.json();
     } catch (err) {
-        showError(err.message || 'Write operation failed');
+        console.error('Feedback submission failed:', err);
         throw err;
     }
 }
