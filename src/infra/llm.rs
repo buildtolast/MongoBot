@@ -420,6 +420,7 @@ fn sanitize_example_text(s: &str) -> String {
 
 /// Build the system prompt with few-shot examples from prior successful queries.
 pub(crate) fn build_prompt_with_examples(query: &str, schema: &str, examples: &[crate::domain::models::QueryFeedback]) -> String {
+    tracing::trace!(examples = examples.len(), "build_prompt_with_examples");
     let mut examples_section = String::new();
     if !examples.is_empty() {
         examples_section.push_str("\n## EXAMPLES OF SUCCESSFUL TRANSLATIONS\n");

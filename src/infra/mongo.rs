@@ -293,6 +293,7 @@ impl MongoPool {
         query_embedding: &[f32],
         k: usize,
     ) -> Result<Vec<Document>, AppError> {
+        tracing::debug!(k, "find_similar_feedback start");
         let collection = "query_feedback";
         // Only retrieve liked or corrected examples
         let filter = doc! { "feedback": { "$in": ["liked", "corrected"] } };
@@ -341,6 +342,8 @@ impl MongoPool {
         // Sort by similarity descending
         results.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
+        let returned = results.len().min(k);
+        tracing::debug!(scanned, returned, "find_similar_feedback complete");
         Ok(results.into_iter().take(k).map(|(_, doc)| doc).collect())
     }
 }

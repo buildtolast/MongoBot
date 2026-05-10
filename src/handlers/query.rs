@@ -29,13 +29,24 @@ pub async fn handle_query(
     // --- Few-shot retrieval ---
     let mut examples = Vec::new();
     if state.config.enable_feedback_retrieval {
-        if let Ok(embedding) = state.llm.embed_text(&body.query).await {
-            if let Ok(similar_docs) = state.mongo.find_similar_feedback(&embedding, state.config.feedback_top_k).await {
-                examples = similar_docs.into_iter()
-                    .filter_map(|doc| mongodb::bson::from_document::<QueryFeedback>(doc).ok())
-                    .collect();
+        tracing::debug!(query = %body.query, top_k = state.config.feedback_top_k, "few-shot retrieval enabled");
+        match state.llm.embed_text(&body.query).await {
+            Ok(embedding) => {
+                if let Ok(similar_docs) = state.mongo.find_similar_feedback(&embedding, state.config.feedback_top_k).await {
+                    examples = similar_docs.into_iter()
+                        .filter_map(|doc| mongodb::bson::from_document::<QueryFeedback>(doc).ok())
+                        .collect();
+                    if !examples.is_empty() {
+                        tracing::info!(examples_retrieved = examples.len(), "injecting few-shot examples into prompt");
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "embed_text failed; proceeding without few-shot");
             }
         }
+    } else {
+        tracing::trace!("few-shot retrieval disabled by config");
     }
 
     let prompt = crate::infra::llm::build_prompt_with_examples(&body.query, &schema_context, &examples);
