@@ -4,7 +4,7 @@
 
 function downloadCsv() {
     if (!AppState.currentQuery) {
-        showError('No query to export');
+        showToast('No query to export', 'warning');
         return;
     }
     exportData('csv');
@@ -12,7 +12,7 @@ function downloadCsv() {
 
 function downloadJson() {
     if (!AppState.currentQuery) {
-        showError('No query to export');
+        showToast('No query to export', 'warning');
         return;
     }
     exportData('json');

@@ -78,7 +78,7 @@ async function previewQuery(queryText, model, provider) {
     } catch (err) {
         currentAbortController = null;
         if (err.name === 'AbortError') throw err;
-        showError(err.message || 'Preview failed');
+        showToast(err.message || 'Preview failed', 'error');
         throw err;
     }
 }
@@ -141,7 +141,7 @@ async function refreshSchemas() {
         var data = await resp.json();
         return data.schemas || [];
     } catch (err) {
-        showError('Schema refresh failed: ' + err.message);
+        showToast('Schema refresh failed: ' + err.message, 'error');
         return [];
     }
 }
@@ -173,13 +173,13 @@ async function fetchProviders() {
 function exportData(format) {
     var response = AppState.lastResults;
     if (!response || !response.results) {
-        showError('No results to export');
+        showToast('No results to export', 'warning');
         return;
     }
 
     var data = Array.isArray(response.results) ? response.results : [response.results];
     if (data.length === 0) {
-        showError('No data to export');
+        showToast('No data to export', 'warning');
         return;
     }
 
