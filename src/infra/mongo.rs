@@ -143,6 +143,13 @@ impl MongoPool {
             collect_field_types(&doc, "", &mut field_types);
         }
 
+        // Post-process: collapse paths where many id-like keys appear at the
+        // same prefix. This catches the "map of <hash> -> sub-doc" pattern
+        // that accumulates across sampled documents — each individual doc
+        // may only have 1-2 hash keys, but across 50 sampled docs the
+        // distinct count grows large.
+        let field_types = collapse_dynamic_key_paths(field_types);
+
         let fields: Vec<FieldDef> = field_types
             .into_iter()
             .map(|(name, field_type)| FieldDef {
@@ -416,6 +423,74 @@ fn collect_field_types(
     }
 }
 
+/// Post-process the accumulated field-type map: detect prefixes where
+/// many distinct id-like segments appear and collapse all matching paths
+/// to use a `<key>` placeholder.
+///
+/// Example input keys (from sampling 50 customer docs):
+///   tier_and_details.069f...062.active   -> boolean
+///   tier_and_details.069f...062.tier     -> string
+///   tier_and_details.07d5...8a2.active   -> boolean
+///   tier_and_details.07d5...8a2.tier     -> string
+///   ... (many more hash-keyed entries)
+///
+/// Output:
+///   tier_and_details.<key>.active        -> boolean
+///   tier_and_details.<key>.tier          -> string
+///
+/// A prefix is treated as dynamic if 3+ distinct id-like segments appear
+/// directly under it across the sampled paths.
+fn collapse_dynamic_key_paths(
+    types: std::collections::BTreeMap<String, String>,
+) -> std::collections::BTreeMap<String, String> {
+    use std::collections::{BTreeMap, HashMap, HashSet};
+
+    // First pass: for each prefix, count distinct id-like next-segments.
+    let mut prefix_id_counts: HashMap<String, HashSet<String>> = HashMap::new();
+    for path in types.keys() {
+        let segments: Vec<&str> = path.split('.').collect();
+        for (i, seg) in segments.iter().enumerate() {
+            if is_id_like_key(seg) {
+                let prefix = segments[..i].join(".");
+                prefix_id_counts
+                    .entry(prefix)
+                    .or_default()
+                    .insert((*seg).to_string());
+            }
+        }
+    }
+
+    // Prefixes with 3+ distinct id-like next-segments are treated as dynamic maps.
+    let dynamic_prefixes: HashSet<String> = prefix_id_counts
+        .into_iter()
+        .filter(|(_, ids)| ids.len() >= 3)
+        .map(|(p, _)| p)
+        .collect();
+
+    // Second pass: rewrite paths, replacing id-like segments at dynamic
+    // prefixes with `<key>`. Use a BTreeMap so duplicate rewritten keys
+    // collapse naturally.
+    let mut result: BTreeMap<String, String> = BTreeMap::new();
+    for (path, ty) in types {
+        let segments: Vec<&str> = path.split('.').collect();
+        let mut rewritten: Vec<String> = Vec::with_capacity(segments.len());
+        for (i, seg) in segments.iter().enumerate() {
+            if is_id_like_key(seg) {
+                let prefix = segments[..i].join(".");
+                if dynamic_prefixes.contains(&prefix) {
+                    rewritten.push("<key>".to_string());
+                    continue;
+                }
+            }
+            rewritten.push((*seg).to_string());
+        }
+        // Use entry().or_insert() so the first-seen type wins on collisions
+        // (avoids flapping when sampled docs disagree on inner type).
+        result.entry(rewritten.join(".")).or_insert(ty);
+    }
+    result
+}
+
 /// Heuristic: detect whether a document's keys look like dynamic identifiers
 /// (hashes, UUIDs, ObjectIds) used as map keys, rather than static field names.
 /// Such "map of <id> -> X" shapes should NOT have every key promoted to a
@@ -423,6 +498,10 @@ fn collect_field_types(
 ///
 /// Returns true when the doc has 5+ keys AND at least 80% of keys match a
 /// long-hex pattern (16+ hex chars) or look UUID-shaped.
+///
+/// Used by collect_field_types as an early-exit optimisation. The post-pass
+/// in collapse_dynamic_key_paths catches the cross-document accumulation
+/// case that this per-doc heuristic misses.
 fn looks_like_dynamic_key_map(doc: &Document) -> bool {
     let total = doc.len();
     if total < 5 {
@@ -479,8 +558,53 @@ fn bson_type_name(value: &Bson) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{cosine_similarity, is_id_like_key, looks_like_dynamic_key_map, MAX_FEEDBACK_SCAN};
+    use super::{
+        collapse_dynamic_key_paths, cosine_similarity, is_id_like_key,
+        looks_like_dynamic_key_map, MAX_FEEDBACK_SCAN,
+    };
     use mongodb::bson::doc;
+
+    #[test]
+    fn test_collapse_dynamic_key_paths_collapses_hash_map() {
+        // Simulate accumulated paths from sampling 5 customer docs where
+        // each customer's tier_and_details has 1 distinct hash key.
+        let mut types = std::collections::BTreeMap::new();
+        for hex in [
+            "069f84c793a14fa891f716cf09314062",
+            "07d516cfd7fc4ec6acf175bb78cb98a2",
+            "0db0e5c9a332493ea75f70d028ed36e8",
+            "0df078f33aa74a2e9696e0520c1a828a",
+            "0f415868bc0b4acfa9160adf1b840fa9",
+        ] {
+            types.insert(format!("tier_and_details.{hex}.active"), "boolean".into());
+            types.insert(format!("tier_and_details.{hex}.tier"), "string".into());
+        }
+        types.insert("name".into(), "string".into());
+        types.insert("email".into(), "string".into());
+
+        let result = collapse_dynamic_key_paths(types);
+
+        // 5 hashes × 2 sub-fields = 10 entries collapse to 2 placeholder entries
+        assert!(result.contains_key("tier_and_details.<key>.active"));
+        assert!(result.contains_key("tier_and_details.<key>.tier"));
+        assert!(result.contains_key("name"));
+        assert!(result.contains_key("email"));
+        // Shouldn't contain any of the literal hash keys
+        assert!(!result.contains_key("tier_and_details.069f84c793a14fa891f716cf09314062.active"));
+        assert_eq!(result.len(), 4); // 2 placeholder + name + email
+    }
+
+    #[test]
+    fn test_collapse_does_not_collapse_when_too_few_hashes() {
+        // 2 distinct hashes is below the threshold of 3
+        let mut types = std::collections::BTreeMap::new();
+        types.insert("map.069f84c793a14fa891f716cf09314062.x".into(), "string".into());
+        types.insert("map.07d516cfd7fc4ec6acf175bb78cb98a2.x".into(), "string".into());
+        let result = collapse_dynamic_key_paths(types);
+        // Both literal paths preserved
+        assert_eq!(result.len(), 2);
+        assert!(result.keys().any(|k| k.contains("069f")));
+    }
 
     #[test]
     fn test_is_id_like_key_recognizes_hashes_and_uuids() {
