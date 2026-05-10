@@ -241,9 +241,12 @@ pub(crate) fn build_filter(query: &ParsedQuery, schema: Option<&CollectionSchema
         doc.insert("$or", Bson::Array(or_branches));
     }
 
-    // $text search
+    // $text search — guard against empty strings; MongoDB rejects
+    // {"$text":{"$search":""}} with "$text expression has no terms".
     if let Some(ref search) = query.text_search {
-        doc.insert("$text", doc! { "$search": search.as_str() });
+        if !search.trim().is_empty() {
+            doc.insert("$text", doc! { "$search": search.as_str() });
+        }
     }
 
     // $expr (cross-field comparison)

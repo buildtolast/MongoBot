@@ -577,7 +577,13 @@ fn parse_llm_response(text: &str) -> Result<ParsedQuery, AppError> {
         })
         .unwrap_or_default();
 
-    let text_search = obj.get("text_search").and_then(|v| v.as_str()).map(String::from);
+    // Coerce empty strings to None — MongoDB rejects {"$text":{"$search":""}}
+    // with "$text expression has no terms", which surfaced as a 500 every time
+    // the LLM included text_search="" speculatively.
+    let text_search = obj.get("text_search")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .map(String::from);
     let expr = obj.get("expr").cloned();
 
     let raw_pipeline = obj.get("raw_pipeline")
@@ -866,6 +872,23 @@ mod tests {
         let parsed = parse_llm_response(json).unwrap();
         let raw = parsed.raw_filter.unwrap();
         assert!(raw.get("$or").is_some());
+    }
+
+    #[test]
+    fn test_empty_text_search_coerced_to_none() {
+        // LLMs sometimes speculatively add text_search="" which would explode
+        // MongoDB ($text expression has no terms). Parser must coerce to None.
+        let json = r#"{"collection":"movies","operation":"find","filters":[],"text_search":""}"#;
+        let parsed = parse_llm_response(json).unwrap();
+        assert_eq!(parsed.text_search, None, "empty text_search should be None");
+
+        let json2 = r#"{"collection":"movies","operation":"find","filters":[],"text_search":"   "}"#;
+        let parsed2 = parse_llm_response(json2).unwrap();
+        assert_eq!(parsed2.text_search, None, "whitespace-only text_search should be None");
+
+        let json3 = r#"{"collection":"movies","operation":"find","filters":[],"text_search":"matrix"}"#;
+        let parsed3 = parse_llm_response(json3).unwrap();
+        assert_eq!(parsed3.text_search.as_deref(), Some("matrix"));
     }
 
     #[test]
