@@ -31,7 +31,7 @@ function renderConfig(config) {
         ['Anthropic URL', llm.anthropic_api_url],
         ['OpenAI URL', llm.openai_api_url],
         ['Cloud Model', llm.cloud_llm_model],
-        ['Cloud API Key', llm.cloud_api_key],
+        ['Cloud API Key', llm.cloud_llm_api_key],
     ]);
 
     var db = config.mongodb || {};
@@ -57,6 +57,14 @@ function renderConfig(config) {
     section('Slack', [
         ['Bot Token', slack.bot_token],
         ['Signing Secret', slack.signing_secret],
+    ]);
+
+    var fb = config.feedback || {};
+    section('Feedback Loop', [
+        ['Few-shot Retrieval', fb.enable_retrieval ? 'Enabled' : 'Disabled'],
+        ['Top-K Examples', fb.top_k],
+        ['Embedding Model', fb.embedding_model],
+        ['Embedding URL', fb.embedding_url],
     ]);
 
     body.innerHTML = html;
@@ -408,7 +416,12 @@ function renderSchemas(schemas) {
 
         var countSpan = document.createElement('span');
         countSpan.className = 'collection-count';
-        if (schema.count != null) {
+        // API returns `description` (e.g. "80047 documents" for auto-introspected,
+        // or human text like "E-commerce order records" for YAML-described).
+        // Fall back to legacy `count` field if a future API exposes it.
+        if (schema.description) {
+            countSpan.textContent = schema.description;
+        } else if (schema.count != null) {
             countSpan.textContent = schema.count + ' docs';
         }
 

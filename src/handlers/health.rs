@@ -129,6 +129,12 @@ pub async fn get_config(state: web::Data<AppState>) -> HttpResponse {
         "slack": {
             "bot_token": config.slack_bot_token.as_ref().map(|_| "***set***"),
             "signing_secret": config.slack_signing_secret.as_ref().map(|_| "***set***"),
+        },
+        "feedback": {
+            "enable_retrieval": config.enable_feedback_retrieval,
+            "top_k": config.feedback_top_k,
+            "embedding_model": config.embedding_model,
+            "embedding_url": config.embedding_url,
         }
     }))
 }
