@@ -446,7 +446,7 @@ You are a MongoDB query translator. Return ONLY valid JSON. No explanation.
 - Use ONLY schema fields.
 - Use dot notation for nested fields (e.g., "salary.bonus").
 - Dates must be ISO 8601 ("YYYY-MM-DDT00:00:00Z").
-- For "distinct" operations, include the field in the "projection".
+- For "distinct" operations, put the target field as the SINGLE element of "projection". Example for "list distinct genres in movies": {{"collection":"movies","operation":"distinct","projection":["genre"],"filters":[]}}.
 - For "aggregate" operations, use the "group_by" field.
 - For complex queries, use "raw_pipeline" or "raw_filter" with native MongoDB syntax.
 - Forbidden: $out, $merge, $function, $accumulator, $where.
@@ -515,13 +515,19 @@ fn parse_llm_response(text: &str) -> Result<ParsedQuery, AppError> {
         .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
         .unwrap_or_default();
 
-    // For distinct with empty projection, try to find the field from other keys
+    // For distinct with empty projection, try to find the field from other
+    // keys various LLMs use. Order matters — check the most specific keys
+    // first so the auto-promote behaves predictably.
     if operation == crate::domain::models::QueryOperation::Distinct && projection.is_empty() {
-        // Check "field" key (some LLMs return {"field": "language"} for distinct)
-        if let Some(f) = obj.get("field").and_then(|v| v.as_str()) {
+        // qwen3-coder and similar return {"distinct_field": "reviewer"}
+        if let Some(f) = obj.get("distinct_field").and_then(|v| v.as_str()) {
             projection.push(f.to_string());
         }
-        // Check "key" key
+        // {"field": "language"}
+        else if let Some(f) = obj.get("field").and_then(|v| v.as_str()) {
+            projection.push(f.to_string());
+        }
+        // {"key": "language"}
         else if let Some(f) = obj.get("key").and_then(|v| v.as_str()) {
             projection.push(f.to_string());
         }
@@ -860,6 +866,29 @@ mod tests {
         let parsed = parse_llm_response(json).unwrap();
         let raw = parsed.raw_filter.unwrap();
         assert!(raw.get("$or").is_some());
+    }
+
+    #[test]
+    fn test_distinct_field_promoted_from_distinct_field_key() {
+        let json = r#"{"collection":"reviews","operation":"distinct","distinct_field":"reviewer","filters":[]}"#;
+        let parsed = parse_llm_response(json).unwrap();
+        assert_eq!(parsed.operation, crate::domain::models::QueryOperation::Distinct);
+        assert_eq!(parsed.projection, vec!["reviewer".to_string()]);
+    }
+
+    #[test]
+    fn test_distinct_field_promoted_from_field_key() {
+        let json = r#"{"collection":"movies","operation":"distinct","field":"genre","filters":[]}"#;
+        let parsed = parse_llm_response(json).unwrap();
+        assert_eq!(parsed.projection, vec!["genre".to_string()]);
+    }
+
+    #[test]
+    fn test_distinct_field_explicit_projection_wins() {
+        // If projection is already set, distinct_field should NOT override it.
+        let json = r#"{"collection":"movies","operation":"distinct","projection":["language"],"distinct_field":"genre","filters":[]}"#;
+        let parsed = parse_llm_response(json).unwrap();
+        assert_eq!(parsed.projection, vec!["language".to_string()]);
     }
 
     #[test]
