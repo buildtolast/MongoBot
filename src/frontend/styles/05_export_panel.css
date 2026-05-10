@@ -1,87 +1,50 @@
 /* =============================================
-   Export Panel
+   Export Buttons
    ============================================= */
-
-#results-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding-bottom: 10px;
-    border-bottom: 1px solid var(--border);
-    margin-bottom: 10px;
-}
-
-.results-stats {
-    display: flex;
-    gap: 12px;
-    align-items: center;
-}
-
-.results-stats span {
-    font-size: 0.8rem;
-}
-
-#result-count {
-    font-weight: 600;
-    color: var(--accent);
-}
-
-#result-time {
-    color: var(--text-muted);
-    font-family: var(--font-mono);
-    font-size: 0.75rem;
-}
-
-#result-collection {
-    color: var(--success);
-    font-family: var(--font-mono);
-    font-size: 0.75rem;
-    background: var(--success-bg);
-    padding: 2px 8px;
-    border-radius: 10px;
-}
 
 .export-buttons {
     display: flex;
-    gap: 6px;
+    gap: var(--space-2);
+    flex-shrink: 0;
 }
 
 .export-btn {
-    padding: 5px 14px;
-    font-size: 0.78rem;
-    font-weight: 600;
+    padding: 4px var(--space-3);
+    font-size: 10px;
+    font-weight: 700;
     font-family: var(--font-mono);
-    border-radius: var(--radius);
+    border-radius: var(--radius-sm);
     transition: all var(--transition);
     text-transform: uppercase;
-    letter-spacing: 0.3px;
+    letter-spacing: 0.5px;
     cursor: pointer;
+    border: 1px solid;
 }
 
 #export-csv {
-    background: rgba(63, 185, 80, 0.12);
-    border: 1px solid rgba(63, 185, 80, 0.35);
-    color: var(--success);
+    background: var(--success-bg);
+    border-color: hsl(142 71% 45% / 0.3);
+    color: var(--success-color);
 }
 
 #export-csv:hover {
-    background: rgba(63, 185, 80, 0.25);
-    border-color: var(--success);
+    background: hsl(142 71% 45% / 0.2);
+    border-color: var(--success-color);
 }
 
 #export-json {
-    background: rgba(88, 166, 255, 0.12);
-    border: 1px solid rgba(88, 166, 255, 0.35);
-    color: var(--accent);
+    background: var(--info-bg);
+    border-color: hsl(217 91% 60% / 0.3);
+    color: var(--info-color);
 }
 
 #export-json:hover {
-    background: rgba(88, 166, 255, 0.25);
-    border-color: var(--accent);
+    background: hsl(217 91% 60% / 0.2);
+    border-color: var(--info-color);
 }
 
 .export-btn:active {
-    transform: scale(0.96);
+    transform: scale(0.95);
 }
 
 .export-btn.exporting {
@@ -94,11 +57,12 @@
     position: absolute;
     top: 50%;
     left: 50%;
-    width: 12px;
-    height: 12px;
-    margin: -6px 0 0 -6px;
-    border: 2px solid var(--accent);
+    width: 10px;
+    height: 10px;
+    margin: -5px 0 0 -5px;
+    border: 2px solid currentColor;
     border-top-color: transparent;
     border-radius: 50%;
     animation: spin 0.6s linear infinite;
+    color: var(--text-secondary);
 }

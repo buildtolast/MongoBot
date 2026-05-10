@@ -2,46 +2,7 @@
    Responsive Design
    ============================================= */
 
-/* Toast notification */
-.toast {
-    position: fixed;
-    bottom: 20px;
-    right: 20px;
-    padding: 12px 20px;
-    background: var(--danger);
-    color: #fff;
-    border-radius: var(--radius);
-    font-size: 0.85rem;
-    font-weight: 500;
-    box-shadow: var(--shadow-lg);
-    z-index: 1000;
-    animation: toast-in 0.3s ease;
-    max-width: 400px;
-    word-break: break-word;
-}
-
-.toast.toast-warning {
-    background: var(--warning);
-    color: #000;
-}
-
-.toast.toast-success {
-    background: var(--success);
-    color: #000;
-}
-
-@keyframes toast-in {
-    from {
-        opacity: 0;
-        transform: translateY(12px);
-    }
-    to {
-        opacity: 1;
-        transform: translateY(0);
-    }
-}
-
-/* --- Tablet (768px) --- */
+/* ---- Tablet (768px) ---- */
 
 @media (max-width: 768px) {
     :root {
@@ -77,7 +38,7 @@
     .sidebar-overlay {
         position: fixed;
         inset: 0;
-        background: rgba(0, 0, 0, 0.5);
+        background: hsl(0 0% 0% / 0.5);
         z-index: 99;
         opacity: 0;
         pointer-events: none;
@@ -90,11 +51,11 @@
     }
 
     #query-section {
-        padding: 12px 16px 8px;
+        padding: var(--space-3) var(--space-4) var(--space-3);
     }
 
     #results-section {
-        padding: 0 16px 12px;
+        padding: var(--space-3) var(--space-4) var(--space-3);
     }
 
     .results-stats {
@@ -105,9 +66,21 @@
         flex-direction: column;
         align-items: center;
     }
+
+    .settings-grid {
+        grid-template-columns: 1fr;
+    }
+
+    #query-inspectors {
+        flex-direction: column;
+    }
+
+    #query-inspectors .collapsible {
+        min-width: 0;
+    }
 }
 
-/* --- Mobile (480px) --- */
+/* ---- Mobile (480px) ---- */
 
 @media (max-width: 480px) {
     html {
@@ -124,41 +97,58 @@
 
     #results-header {
         flex-direction: column;
-        gap: 8px;
         align-items: flex-start;
     }
 
     #results-table td {
-        max-width: 180px;
-        padding: 6px 10px;
+        max-width: 160px;
+        padding: 5px var(--space-2);
+        font-size: 11px;
     }
 
     #results-table th {
-        padding: 8px 10px;
+        padding: var(--space-2) var(--space-2);
     }
 
     .status-indicators {
-        gap: 4px;
+        gap: var(--space-1);
     }
 
     .status-badge {
-        font-size: 0.65rem;
-        padding: 2px 6px;
+        font-size: 9px;
+        padding: 1px var(--space-1);
     }
 
     #top-bar {
-        padding: 6px 12px;
+        padding: 0 var(--space-3);
     }
 
     #pagination button {
         min-width: 28px;
         height: 28px;
-        font-size: 0.75rem;
+        font-size: 11px;
+    }
+
+    #toast-container {
+        top: calc(var(--header-height) + var(--space-2));
+        left: var(--space-3);
+        right: var(--space-3);
     }
 
     .toast {
-        left: 12px;
-        right: 12px;
         max-width: none;
+    }
+
+    .modal-card {
+        width: 95%;
+    }
+
+    .query-options {
+        gap: var(--space-3);
+    }
+
+    .export-buttons {
+        width: 100%;
+        justify-content: flex-end;
     }
 }

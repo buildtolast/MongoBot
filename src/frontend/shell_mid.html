@@ -22,10 +22,10 @@
     <header id="top-bar">
       <button id="sidebar-toggle" class="icon-btn" title="Toggle sidebar">&#9776;</button>
       <div class="status-indicators">
-        <span id="ollama-status" class="status-badge" title="Ollama LLM">LLM</span>
+        <span id="ollama-status" class="status-badge" title="LLM provider">LLM</span>
         <span id="mongo-status" class="status-badge" title="MongoDB">DB</span>
         <span id="ws-status" class="status-badge" title="WebSocket">WS</span>
-        <select id="theme-select" class="theme-select" title="Theme">
+        <select id="theme-select" class="theme-select" title="Toggle theme">
           <option value="dark">Dark</option>
           <option value="dim">Dim</option>
           <option value="light">Light</option>
@@ -66,8 +66,8 @@
           <span id="result-collection"></span>
         </div>
         <div id="feedback-row" class="feedback-row" hidden>
-          <button id="feedback-like" class="feedback-btn" title="This was correct">👍</button>
-          <button id="feedback-dislike" class="feedback-btn" title="This was incorrect">👎</button>
+          <button id="feedback-like" class="feedback-btn" title="This was correct">&#128077;</button>
+          <button id="feedback-dislike" class="feedback-btn" title="This was incorrect">&#128078;</button>
           <div id="feedback-note-container" class="feedback-note-container" hidden>
             <input type="text" id="feedback-note" placeholder="What was wrong?" />
             <button id="feedback-submit-note" class="icon-btn">Submit</button>
@@ -118,6 +118,7 @@
       </div>
     </section>
     <div id="error-toast" class="toast" hidden></div>
+    <div id="toast-container"></div>
     <div id="confirm-modal" class="modal-overlay" hidden>
       <div class="modal-card">
         <div class="modal-header">
