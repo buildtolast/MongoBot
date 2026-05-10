@@ -114,6 +114,37 @@ See [NextSteps.md](NextSteps.md) for the approved design of the next three commi
 2. **Phase 2 (`v0.5.1`)** — In-context few-shot injection: retrieve top-K similar past liked/corrected examples and inject them into every LLM prompt (Ollama embeddings + cosine similarity, works on all 5 providers)
 3. **Phase 3 (`v0.5.2`)** — `training/` directory with MLX (Apple Silicon) + Unsloth (NVIDIA) LoRA fine-tuning scripts, GGUF export, Ollama import, and before/after evaluator
 
+## Feedback loop and fine-tuning (v0.5.x)
+
+The bot captures user feedback on query quality and uses it for two purposes:
+
+**In-context few-shot retrieval** — controlled by `ENABLE_FEEDBACK_RETRIEVAL` (default `true`)
+and `FEEDBACK_TOP_K` (default 5). Before each query is sent to the LLM, the bot embeds
+the natural-language input via the configured embedding model
+(`EMBEDDING_MODEL`, default `nomic-embed-text` on `EMBEDDING_URL`, defaults to `OLLAMA_URL`)
+and retrieves the top-K most similar liked/corrected feedback records by cosine
+similarity. These are injected as few-shot examples in the LLM prompt.
+
+**LoRA fine-tuning pipeline** — once the `query_feedback` collection has accumulated
+≥50 corrected examples, the scripts under [`training/`](training/README.md) export the
+dataset, run a LoRA fine-tune on Apple Silicon (MLX) or NVIDIA (Unsloth), merge the
+adapter into a GGUF, and import the result into Ollama as a new selectable model.
+
+### Endpoints
+- `POST /api/feedback` — submit explicit feedback (liked / disliked / corrected / abandoned)
+- `GET /api/feedback/stats` — totals by type / provider / model
+- `GET /api/feedback/export?format=jsonl|json|dpo-jsonl&type=<type>` — export records
+
+### Frontend
+The results header includes thumbs-up / thumbs-down buttons and an inline note
+textarea (shown after a 👎 click). Editing the parsed query in approve mode and
+clicking Approve auto-captures a `corrected` feedback record.
+
+### Privacy
+The `query_feedback` collection is blocked from natural-language queries via the
+safety layer, and excluded from schema introspection so its fields never leak into
+LLM prompts.
+
 ## Docker
 
 ```bash

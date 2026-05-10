@@ -1,6 +1,14 @@
 # NextSteps — Query Feedback + In-Context Learning + Fine-Tuning Pipeline
 
-> This document is the approved design for the next three commits.
+> **STATUS: COMPLETED — landed in commits `9642b65` (v0.5.0+v0.5.1) and `304e54f` (v0.5.2) on 2026-05-09.**
+> Phase 1 (feedback capture), Phase 2 (in-context few-shot retrieval), and Phase 3
+> (LoRA training pipeline) are all in main. See top-level `README.md` for usage and
+> `training/README.md` for the fine-tuning walkthrough. The original plan below is
+> retained for historical reference.
+
+---
+
+> **HISTORICAL:** This document is the approved design for the next three commits.
 > It will be executed in sequence: Phase 1 -> Phase 2 -> Phase 3.
 > Nothing in this file has been implemented yet.
 

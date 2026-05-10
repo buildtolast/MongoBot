@@ -304,16 +304,29 @@ impl MongoPool {
         let mut results = Vec::new();
         let mut scanned: usize = 0;
         use futures::TryStreamExt;
-        while let Ok(Some(doc)) = cursor.try_next().await {
-            scanned += 1;
-            if let Some(emb_bson) = doc.get("embedding") {
-                if let Some(emb_array) = emb_bson.as_array() {
-                    let emb: Vec<f32> = emb_array.iter()
-                        .filter_map(|b| b.as_f64().map(|f| f as f32))
-                        .collect();
-                    if emb.len() == query_embedding.len() {
-                        let sim = cosine_similarity(query_embedding, &emb);
-                        results.push((sim, doc));
+        // Intentional silent-degrade: a cursor error during retrieval stops the scan
+        // but still returns whatever partial results were collected.  Propagating here
+        // would turn a transient network hiccup into a hard failure for the caller,
+        // which is worse than serving zero few-shot examples.
+        loop {
+            match cursor.try_next().await {
+                Err(e) => {
+                    tracing::warn!("find_similar_feedback cursor error (returning partial results): {e}");
+                    break;
+                }
+                Ok(None) => break,
+                Ok(Some(doc)) => {
+                    scanned += 1;
+                    if let Some(emb_bson) = doc.get("embedding") {
+                        if let Some(emb_array) = emb_bson.as_array() {
+                            let emb: Vec<f32> = emb_array.iter()
+                                .filter_map(|b| b.as_f64().map(|f| f as f32))
+                                .collect();
+                            if emb.len() == query_embedding.len() {
+                                let sim = cosine_similarity(query_embedding, &emb);
+                                results.push((sim, doc));
+                            }
+                        }
                     }
                 }
             }

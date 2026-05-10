@@ -474,6 +474,18 @@ pub enum FeedbackType {
     Abandoned,
 }
 
+impl std::fmt::Display for FeedbackType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            FeedbackType::Liked => "liked",
+            FeedbackType::Disliked => "disliked",
+            FeedbackType::Corrected => "corrected",
+            FeedbackType::Abandoned => "abandoned",
+        };
+        f.write_str(s)
+    }
+}
+
 /// A request to submit feedback.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeedbackRequest {
@@ -544,6 +556,14 @@ pub struct QueryFeedback {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn test_feedback_type_display() {
+        assert_eq!(FeedbackType::Liked.to_string(), "liked");
+        assert_eq!(FeedbackType::Disliked.to_string(), "disliked");
+        assert_eq!(FeedbackType::Corrected.to_string(), "corrected");
+        assert_eq!(FeedbackType::Abandoned.to_string(), "abandoned");
+    }
 
     #[test]
     fn test_feedback_type_serialization() {

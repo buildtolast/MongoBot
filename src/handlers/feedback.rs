@@ -86,13 +86,14 @@ pub async fn get_feedback_stats(
     let mut cursor = state.mongo.find(collection, Some(doc! {}), None, None, None).await
         .map_err(|e| AppError::Internal(e.to_string()))?;
 
-    while let Ok(Some(doc)) = cursor.try_next().await {
+    while let Some(doc) = cursor.try_next().await
+        .map_err(|e| AppError::Internal(format!("MongoDB cursor error: {e}")))? {
         let fb: QueryFeedback = mongodb::bson::from_document(doc)
             .map_err(|e| AppError::Internal(format!("Failed to deserialize: {}", e)))?;
         total += 1;
         *by_provider.entry(fb.provider.clone()).or_insert(0) += 1;
         *by_model.entry(fb.model.clone()).or_insert(0) += 1;
-        *stats_map.entry(format!("{:?}", fb.feedback).to_lowercase()).or_insert(0) += 1;
+        *stats_map.entry(fb.feedback.to_string()).or_insert(0) += 1;
     }
 
     Ok(HttpResponse::Ok().json(json!({
@@ -125,7 +126,8 @@ pub async fn export_feedback(
         .map_err(|e| AppError::Internal(e.to_string()))?;
 
     let mut feedbacks = Vec::new();
-    while let Ok(Some(doc)) = cursor.try_next().await {
+    while let Some(doc) = cursor.try_next().await
+        .map_err(|e| AppError::Internal(format!("MongoDB cursor error: {e}")))? {
         let feedback: QueryFeedback = mongodb::bson::from_document(doc)
             .map_err(|e| AppError::Internal(format!("Failed to deserialize feedback: {}", e)))?;
         feedbacks.push(feedback);
