@@ -38,6 +38,7 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
+    gap: 8px;
     padding: 8px 12px;
     cursor: pointer;
     transition: background var(--transition);
@@ -67,10 +68,28 @@
     flex-shrink: 0;
 }
 
+.collection-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 0 1 auto;
+    min-width: 0;
+}
+
 .collection-count {
     font-size: 0.7rem;
     color: var(--text-muted);
     font-family: var(--font-mono);
+    flex: 1 1 auto;
+    text-align: right;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+}
+
+.collection-expand {
+    flex-shrink: 0;
 }
 
 .collection-expand {
@@ -96,6 +115,7 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
+    gap: 8px;
     padding: 3px 0;
     font-size: 0.78rem;
 }
@@ -103,6 +123,11 @@
 .field-name {
     color: var(--text-secondary);
     font-family: var(--font-mono);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1 1 auto;
+    min-width: 0;
 }
 
 .field-type {
@@ -112,6 +137,14 @@
     border-radius: 8px;
     text-transform: uppercase;
     letter-spacing: 0.3px;
+    flex-shrink: 0;
+}
+
+.field-type-null,
+.field-type-unknown {
+    background: rgba(139, 148, 158, 0.1);
+    color: var(--text-muted);
+    font-style: italic;
 }
 
 .field-type-string {

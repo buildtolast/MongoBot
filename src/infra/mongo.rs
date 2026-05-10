@@ -377,6 +377,25 @@ fn collect_field_types(
                     || inner.contains_key("$numberLong")
                 {
                     types.insert(full_key, type_name);
+                } else if looks_like_dynamic_key_map(inner) {
+                    // The document is a map keyed by dynamic identifiers
+                    // (hash strings, ObjectIds, UUIDs). Recording every key
+                    // would explode the schema with hundreds of meaningless
+                    // entries. Record the parent as an object and descend
+                    // into the first value with a `<key>` placeholder so
+                    // the value's structure is still discoverable.
+                    types.insert(full_key.clone(), "object".to_string());
+                    if let Some((_, first_value)) = inner.iter().next() {
+                        let placeholder = format!("{full_key}.<key>");
+                        match first_value {
+                            Bson::Document(sub) => {
+                                collect_field_types(sub, &placeholder, types);
+                            }
+                            other => {
+                                types.insert(placeholder, bson_type_name(other));
+                            }
+                        }
+                    }
                 } else {
                     collect_field_types(inner, &full_key, types);
                 }
@@ -395,6 +414,47 @@ fn collect_field_types(
             }
         }
     }
+}
+
+/// Heuristic: detect whether a document's keys look like dynamic identifiers
+/// (hashes, UUIDs, ObjectIds) used as map keys, rather than static field names.
+/// Such "map of <id> -> X" shapes should NOT have every key promoted to a
+/// schema field — that would generate hundreds of bogus entries.
+///
+/// Returns true when the doc has 5+ keys AND at least 80% of keys match a
+/// long-hex pattern (16+ hex chars) or look UUID-shaped.
+fn looks_like_dynamic_key_map(doc: &Document) -> bool {
+    let total = doc.len();
+    if total < 5 {
+        return false;
+    }
+    let id_like = doc.keys().filter(|k| is_id_like_key(k)).count();
+    id_like * 5 >= total * 4
+}
+
+fn is_id_like_key(key: &str) -> bool {
+    let len = key.len();
+    if len < 16 {
+        return false;
+    }
+    // Long pure-hex key (ObjectId is 24, MD5 is 32, SHA1 is 40, etc.)
+    if key.chars().all(|c| c.is_ascii_hexdigit()) {
+        return true;
+    }
+    // UUID: 8-4-4-4-12 hex with dashes, total length 36
+    if len == 36 {
+        let bytes = key.as_bytes();
+        let dash_positions = [8usize, 13, 18, 23];
+        let dashes_ok = dash_positions.iter().all(|&i| bytes[i] == b'-');
+        let hex_ok = key
+            .chars()
+            .enumerate()
+            .all(|(i, c)| dash_positions.contains(&i) || c.is_ascii_hexdigit());
+        if dashes_ok && hex_ok {
+            return true;
+        }
+    }
+    false
 }
 
 /// Map a BSON value to a human-readable type name.
@@ -419,7 +479,48 @@ fn bson_type_name(value: &Bson) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{cosine_similarity, MAX_FEEDBACK_SCAN};
+    use super::{cosine_similarity, is_id_like_key, looks_like_dynamic_key_map, MAX_FEEDBACK_SCAN};
+    use mongodb::bson::doc;
+
+    #[test]
+    fn test_is_id_like_key_recognizes_hashes_and_uuids() {
+        assert!(is_id_like_key("069f84c793a14fa891f716cf09314062"));     // 32-char hex (MD5)
+        assert!(is_id_like_key("507f1f77bcf86cd799439011"));             // 24-char hex (ObjectId)
+        assert!(is_id_like_key("550e8400-e29b-41d4-a716-446655440000")); // UUID
+        assert!(!is_id_like_key("user_id"));                              // short
+        assert!(!is_id_like_key("description"));                          // letters
+        assert!(!is_id_like_key("notlongenough123"));                     // 16 chars but valid
+        assert!(is_id_like_key("0123456789abcdef"));                      // exactly 16 hex
+    }
+
+    #[test]
+    fn test_looks_like_dynamic_key_map() {
+        // 5+ hash-keyed entries → true
+        let mut d = doc! {};
+        for hex in [
+            "069f84c793a14fa891f716cf09314062",
+            "07d516cfd7fc4ec6acf175bb78cb98a2",
+            "0db0e5c9a332493ea75f70d028ed36e8",
+            "0df078f33aa74a2e9696e0520c1a828a",
+            "0f415868bc0b4acfa9160adf1b840fa9",
+        ] {
+            d.insert(hex, "x");
+        }
+        assert!(looks_like_dynamic_key_map(&d));
+
+        // Normal docs with named fields → false
+        let normal = doc! {"name": "Alice", "age": 30, "email": "a@b.c"};
+        assert!(!looks_like_dynamic_key_map(&normal));
+
+        // Mixed but mostly named → false
+        let mixed = doc! {
+            "name": "Alice",
+            "069f84c793a14fa891f716cf09314062": "x",
+            "age": 30,
+        };
+        assert!(!looks_like_dynamic_key_map(&mixed));
+    }
+
 
     #[test]
     fn test_cosine_similarity() {
