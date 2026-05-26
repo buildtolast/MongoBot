@@ -1,7 +1,8 @@
 use mongodb::{
     Client, Database, Collection,
+    IndexModel,
     bson::{Bson, Document, doc},
-    options::{ClientOptions, FindOptions},
+    options::{ClientOptions, CountOptions, FindOptions, IndexOptions},
 };
 use std::time::Duration;
 use crate::domain::models::{CollectionSchema, FieldDef, IndexInfo, IndexKey};
@@ -20,6 +21,17 @@ pub struct MongoPool {
 }
 
 impl MongoPool {
+    /// Create a MongoPool for unit tests — parses the URI but does NOT ping.
+    /// Only use in tests that do not call any MongoDB methods.
+    #[cfg(test)]
+    pub async fn new_for_tests() -> Self {
+        let opts = ClientOptions::parse("mongodb://localhost:27017").await
+            .expect("test: failed to parse mongo URI");
+        let client = Client::with_options(opts)
+            .expect("test: failed to create test mongo client");
+        Self { client, db_name: "test".to_string() }
+    }
+
     /// Connect to MongoDB, verify with a ping command.
     pub async fn connect(uri: &str, db_name: &str) -> anyhow::Result<Self> {
         let mut opts = ClientOptions::parse(uri).await?;
@@ -113,8 +125,12 @@ impl MongoPool {
         filter: Option<Document>,
     ) -> Result<u64, AppError> {
         let coll = self.collection(collection_name);
+        let opts = CountOptions::builder()
+            .max_time(Duration::from_secs(30))
+            .build();
         let count = coll
             .count_documents(filter.unwrap_or_default())
+            .with_options(opts)
             .await?;
         Ok(count)
     }
@@ -216,6 +232,42 @@ impl MongoPool {
         Ok(indexes)
     }
 
+    /// Create a single-field index on a collection if it doesn't already exist.
+    /// MongoDB's createIndex is idempotent — calling it on an existing index is a no-op.
+    /// Returns `true` if a new index was created, `false` if it already existed.
+    pub async fn ensure_index(
+        &self,
+        collection_name: &str,
+        field: &str,
+        direction: i32,
+    ) -> Result<bool, AppError> {
+        let coll = self.collection(collection_name);
+
+        // Check if an index already covers this field as its leading key.
+        let mut cursor = coll.list_indexes().await
+            .map_err(|e| AppError::Internal(format!("list_indexes failed: {e}")))?;
+        use futures::TryStreamExt;
+        while let Some(idx) = cursor.try_next().await
+            .map_err(|e| AppError::Internal(format!("index cursor error: {e}")))?
+        {
+            if idx.keys.keys().next().map(|k| k.as_str()) == Some(field) {
+                return Ok(false); // already covered
+            }
+        }
+
+        let key = doc! { field: direction };
+        let opts = IndexOptions::builder()
+            .background(true)
+            .build();
+        let model = IndexModel::builder()
+            .keys(key)
+            .options(opts)
+            .build();
+        coll.create_index(model).await
+            .map_err(|e| AppError::Internal(format!("create_index failed on {collection_name}.{field}: {e}")))?;
+        Ok(true)
+    }
+
     /// Insert a single document.
     pub async fn insert_document(
         &self,
@@ -286,9 +338,14 @@ impl MongoPool {
         field: &str,
         filter: Option<Document>,
     ) -> Result<Vec<Bson>, AppError> {
+        use mongodb::options::DistinctOptions;
         let coll = self.collection(collection_name);
+        let opts = DistinctOptions::builder()
+            .max_time(Duration::from_secs(30))
+            .build();
         let values = coll
             .distinct(field, filter.unwrap_or_default())
+            .with_options(opts)
             .await?;
         Ok(values)
     }
@@ -679,5 +736,200 @@ mod tests {
             "MAX_FEEDBACK_SCAN={MAX_FEEDBACK_SCAN} is outside the safe range [1000, 100000]; \
              see the constant's doc comment before changing it"
         );
+    }
+}
+
+/// Integration tests that require a real MongoDB at localhost:27017.
+/// Tests skip gracefully if MongoDB is not reachable.
+#[cfg(test)]
+mod db_tests {
+    use super::*;
+
+    const TEST_DB: &str = "test_phase3_coverage";
+
+    async fn setup(coll: &str) -> Option<MongoPool> {
+        let pool = MongoPool::connect("mongodb://localhost:27017", TEST_DB)
+            .await
+            .ok()?;
+        let _ = pool.db().collection::<Document>(coll).drop().await;
+        Some(pool)
+    }
+
+    async fn cleanup(pool: &MongoPool, coll: &str) {
+        let _ = pool.db().collection::<Document>(coll).drop().await;
+    }
+
+    #[tokio::test]
+    async fn connect_and_list_collections() {
+        let pool = match setup("t_list_coll").await { Some(p) => p, None => return };
+        pool.insert_document("t_list_coll", doc! { "x": 1 }).await.unwrap();
+        let colls = pool.list_collections().await.unwrap();
+        assert!(colls.contains(&"t_list_coll".to_string()));
+        cleanup(&pool, "t_list_coll").await;
+    }
+
+    #[tokio::test]
+    async fn insert_and_find_document() {
+        let pool = match setup("t_insert_find").await { Some(p) => p, None => return };
+        let id = pool.insert_document("t_insert_find", doc! { "name": "Alice", "age": 30 }).await.unwrap();
+        assert!(!id.is_empty());
+        let docs = pool.find_documents("t_insert_find", None, None, None, None).await.unwrap();
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0].get_str("name").unwrap(), "Alice");
+        cleanup(&pool, "t_insert_find").await;
+    }
+
+    #[tokio::test]
+    async fn count_documents_empty() {
+        let pool = match setup("t_count_empty").await { Some(p) => p, None => return };
+        let count = pool.count_documents("t_count_empty", None).await.unwrap();
+        assert_eq!(count, 0);
+        cleanup(&pool, "t_count_empty").await;
+    }
+
+    #[tokio::test]
+    async fn count_documents_with_filter() {
+        let pool = match setup("t_count_filter").await { Some(p) => p, None => return };
+        pool.insert_document("t_count_filter", doc! { "status": "active" }).await.unwrap();
+        pool.insert_document("t_count_filter", doc! { "status": "inactive" }).await.unwrap();
+        pool.insert_document("t_count_filter", doc! { "status": "active" }).await.unwrap();
+        let count = pool.count_documents("t_count_filter", Some(doc! { "status": "active" })).await.unwrap();
+        assert_eq!(count, 2);
+        cleanup(&pool, "t_count_filter").await;
+    }
+
+    #[tokio::test]
+    async fn distinct_values_for_field() {
+        let pool = match setup("t_distinct").await { Some(p) => p, None => return };
+        pool.insert_document("t_distinct", doc! { "genre": "Action" }).await.unwrap();
+        pool.insert_document("t_distinct", doc! { "genre": "Comedy" }).await.unwrap();
+        pool.insert_document("t_distinct", doc! { "genre": "Action" }).await.unwrap();
+        let vals = pool.distinct_values("t_distinct", "genre", None).await.unwrap();
+        assert_eq!(vals.len(), 2);
+        cleanup(&pool, "t_distinct").await;
+    }
+
+    #[tokio::test]
+    async fn update_one_modifies_document() {
+        let pool = match setup("t_update_one").await { Some(p) => p, None => return };
+        pool.insert_document("t_update_one", doc! { "name": "Bob", "score": 10_i32 }).await.unwrap();
+        let (matched, modified) = pool.update_documents(
+            "t_update_one", doc! { "name": "Bob" }, doc! { "score": 20_i32 }, false
+        ).await.unwrap();
+        assert_eq!(matched, 1);
+        assert_eq!(modified, 1);
+        let docs = pool.find_documents("t_update_one", Some(doc! { "name": "Bob" }), None, None, None).await.unwrap();
+        assert_eq!(docs[0].get_i32("score").unwrap(), 20);
+        cleanup(&pool, "t_update_one").await;
+    }
+
+    #[tokio::test]
+    async fn update_many_modifies_all_matching() {
+        let pool = match setup("t_update_many").await { Some(p) => p, None => return };
+        for _ in 0..3 {
+            pool.insert_document("t_update_many", doc! { "group": "a", "done": false }).await.unwrap();
+        }
+        let (matched, modified) = pool.update_documents(
+            "t_update_many", doc! { "group": "a" }, doc! { "done": true }, true
+        ).await.unwrap();
+        assert_eq!(matched, 3);
+        assert_eq!(modified, 3);
+        cleanup(&pool, "t_update_many").await;
+    }
+
+    #[tokio::test]
+    async fn delete_one_removes_single_document() {
+        let pool = match setup("t_delete_one").await { Some(p) => p, None => return };
+        pool.insert_document("t_delete_one", doc! { "keep": false }).await.unwrap();
+        pool.insert_document("t_delete_one", doc! { "keep": true }).await.unwrap();
+        let deleted = pool.delete_documents("t_delete_one", doc! { "keep": false }, false).await.unwrap();
+        assert_eq!(deleted, 1);
+        assert_eq!(pool.count_documents("t_delete_one", None).await.unwrap(), 1);
+        cleanup(&pool, "t_delete_one").await;
+    }
+
+    #[tokio::test]
+    async fn delete_many_removes_all_matching() {
+        let pool = match setup("t_delete_many").await { Some(p) => p, None => return };
+        for _ in 0..4 {
+            pool.insert_document("t_delete_many", doc! { "batch": "x" }).await.unwrap();
+        }
+        let deleted = pool.delete_documents("t_delete_many", doc! { "batch": "x" }, true).await.unwrap();
+        assert_eq!(deleted, 4);
+        cleanup(&pool, "t_delete_many").await;
+    }
+
+    #[tokio::test]
+    async fn find_with_sort_and_limit() {
+        let pool = match setup("t_find_sort").await { Some(p) => p, None => return };
+        for i in [3_i32, 1, 4, 1, 5] {
+            pool.insert_document("t_find_sort", doc! { "val": i }).await.unwrap();
+        }
+        let docs = pool.find_documents(
+            "t_find_sort", None, Some(doc! { "val": 1 }), Some(3), None
+        ).await.unwrap();
+        assert_eq!(docs.len(), 3);
+        assert_eq!(docs[0].get_i32("val").unwrap(), 1);
+        cleanup(&pool, "t_find_sort").await;
+    }
+
+    #[tokio::test]
+    async fn get_indexes_includes_id_index() {
+        let pool = match setup("t_get_idx").await { Some(p) => p, None => return };
+        pool.insert_document("t_get_idx", doc! { "x": 1 }).await.unwrap();
+        let indexes = pool.get_indexes("t_get_idx").await.unwrap();
+        assert!(indexes.iter().any(|i| i.name == "_id_"));
+        cleanup(&pool, "t_get_idx").await;
+    }
+
+    #[tokio::test]
+    async fn ensure_index_creates_then_detects_existing() {
+        let pool = match setup("t_ensure_idx").await { Some(p) => p, None => return };
+        pool.insert_document("t_ensure_idx", doc! { "email": "a@b.com" }).await.unwrap();
+        let created = pool.ensure_index("t_ensure_idx", "email", 1).await.unwrap();
+        assert!(created, "first call should create the index");
+        let created2 = pool.ensure_index("t_ensure_idx", "email", 1).await.unwrap();
+        assert!(!created2, "second call should detect existing index");
+        cleanup(&pool, "t_ensure_idx").await;
+    }
+
+    #[tokio::test]
+    async fn introspect_collection_discovers_field_types() {
+        let pool = match setup("t_introspect").await { Some(p) => p, None => return };
+        pool.insert_document("t_introspect", doc! {
+            "title": "Test Movie", "year": 2020_i32, "genres": ["Action", "Drama"]
+        }).await.unwrap();
+        pool.insert_document("t_introspect", doc! {
+            "title": "Another Movie", "year": 2021_i32, "rating": 8.5_f64
+        }).await.unwrap();
+        let schema = pool.introspect_collection("t_introspect").await.unwrap();
+        assert_eq!(schema.name, "t_introspect");
+        assert_eq!(schema.source, "introspected");
+        let field_names: Vec<&str> = schema.fields.iter().map(|f| f.name.as_str()).collect();
+        assert!(field_names.contains(&"title"), "should discover title field");
+        assert!(field_names.contains(&"year"), "should discover year field");
+        assert!(schema.indexes.iter().any(|i| i.name == "_id_"), "should list _id_ index");
+        cleanup(&pool, "t_introspect").await;
+    }
+
+    #[tokio::test]
+    async fn insert_one_alias_works() {
+        let pool = match setup("t_insert_one").await { Some(p) => p, None => return };
+        pool.insert_one("t_insert_one", doc! { "key": "value" }).await.unwrap();
+        assert_eq!(pool.count_documents("t_insert_one", None).await.unwrap(), 1);
+        cleanup(&pool, "t_insert_one").await;
+    }
+
+    #[tokio::test]
+    async fn find_with_projection_returns_only_requested_fields() {
+        let pool = match setup("t_projection").await { Some(p) => p, None => return };
+        pool.insert_document("t_projection", doc! { "name": "Eve", "secret": "hidden", "age": 25_i32 }).await.unwrap();
+        let docs = pool.find_documents(
+            "t_projection", None, None, None, Some(doc! { "name": 1 })
+        ).await.unwrap();
+        assert_eq!(docs.len(), 1);
+        assert!(docs[0].contains_key("name"));
+        assert!(!docs[0].contains_key("secret"), "projected-out field should not appear");
+        cleanup(&pool, "t_projection").await;
     }
 }

@@ -40,7 +40,16 @@
             }
         });
 
-        // Refresh schemas button
+        // Load issues panel; also re-render schemas so red badges appear
+        fetchIssues().then(function(issues) {
+            AppState.issues = issues || [];
+            renderIssues(issues);
+            if (AppState.schemas && AppState.schemas.length > 0) {
+                renderSchemas(AppState.schemas);
+            }
+        });
+
+        // Refresh schemas button — also refreshes issues since refresh re-audits indexes
         document.getElementById('refresh-schemas').addEventListener('click', function() {
             var btn = this;
             btn.classList.add('spinning');
@@ -53,6 +62,13 @@
                 }
                 btn.classList.remove('spinning');
                 btn.disabled = false;
+                return fetchIssues();
+            }).then(function(issues) {
+                AppState.issues = issues || [];
+                renderIssues(issues);
+                if (AppState.schemas && AppState.schemas.length > 0) {
+                    renderSchemas(AppState.schemas);
+                }
             }).catch(function() {
                 btn.classList.remove('spinning');
                 btn.disabled = false;

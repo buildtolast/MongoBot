@@ -59,3 +59,20 @@ impl SlackClient {
         self.bot_token.is_some()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_without_token_is_not_configured() {
+        let client = SlackClient::new(None);
+        assert!(!client.is_configured());
+    }
+
+    #[test]
+    fn new_with_token_is_configured() {
+        let client = SlackClient::new(Some("xoxb-test-token".into()));
+        assert!(client.is_configured());
+    }
+}

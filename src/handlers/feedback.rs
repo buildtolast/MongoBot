@@ -266,4 +266,249 @@ mod tests {
         let no_edit = pq_a.clone();
         assert!(!(original != no_edit), "correction detection must not fire when queries are equal");
     }
+
+    #[test]
+    fn format_feedback_as_openai_jsonl_two_records_produces_two_lines() {
+        let r1 = make_feedback("find movies");
+        let r2 = make_feedback("count actors");
+        let out = format_feedback_as_openai_jsonl(&[r1, r2]).unwrap();
+        assert_eq!(out.lines().count(), 2);
+    }
+
+    // ── actix-web validation tests (no real MongoDB/LLM needed) ──────────────
+
+    fn make_feedback_body(overrides: serde_json::Value) -> serde_json::Value {
+        let mut base = serde_json::json!({
+            "nl_query": "find all movies",
+            "provider": "ollama",
+            "model": "test",
+            "mongo_query": "db.movies.find({})",
+            "feedback": "liked",
+            "executed": true,
+            "result_count": 0,
+            "parsed_query": {"collection": "movies", "operation": "find", "filters": []},
+            "schema_snapshot": "movies(title:string)"
+        });
+        if let (Some(obj), Some(ov)) = (base.as_object_mut(), overrides.as_object()) {
+            for (k, v) in ov { obj.insert(k.clone(), v.clone()); }
+        }
+        base
+    }
+
+    #[actix_web::test]
+    async fn submit_feedback_rejects_nl_query_too_long() {
+        use actix_web::{test, web, App};
+        use crate::test_helpers::test_app_state;
+        let state = test_app_state().await;
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(state))
+                .route("/api/feedback", web::post().to(submit_feedback))
+        ).await;
+        let body = make_feedback_body(serde_json::json!({ "nl_query": "x".repeat(4001) }));
+        let req = test::TestRequest::post().uri("/api/feedback").set_json(&body).to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 400);
+    }
+
+    #[actix_web::test]
+    async fn submit_feedback_rejects_note_too_long() {
+        use actix_web::{test, web, App};
+        use crate::test_helpers::test_app_state;
+        let state = test_app_state().await;
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(state))
+                .route("/api/feedback", web::post().to(submit_feedback))
+        ).await;
+        let body = make_feedback_body(serde_json::json!({ "note": "x".repeat(2001) }));
+        let req = test::TestRequest::post().uri("/api/feedback").set_json(&body).to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 400);
+    }
+
+    #[actix_web::test]
+    async fn submit_feedback_rejects_raw_llm_response_too_long() {
+        use actix_web::{test, web, App};
+        use crate::test_helpers::test_app_state;
+        let state = test_app_state().await;
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(state))
+                .route("/api/feedback", web::post().to(submit_feedback))
+        ).await;
+        let body = make_feedback_body(serde_json::json!({ "raw_llm_response": "x".repeat(50001) }));
+        let req = test::TestRequest::post().uri("/api/feedback").set_json(&body).to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 400);
+    }
+
+    #[actix_web::test]
+    async fn submit_feedback_rejects_mongo_query_too_long() {
+        use actix_web::{test, web, App};
+        use crate::test_helpers::test_app_state;
+        let state = test_app_state().await;
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(state))
+                .route("/api/feedback", web::post().to(submit_feedback))
+        ).await;
+        let body = make_feedback_body(serde_json::json!({ "mongo_query": "x".repeat(10001) }));
+        let req = test::TestRequest::post().uri("/api/feedback").set_json(&body).to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 400);
+    }
+
+    #[actix_web::test]
+    async fn export_feedback_rejects_invalid_feedback_type() {
+        use actix_web::{test, web, App};
+        use crate::test_helpers::test_app_state;
+        let state = test_app_state().await;
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(state))
+                .route("/api/feedback/export", web::get().to(export_feedback))
+        ).await;
+        let req = test::TestRequest::get()
+            .uri("/api/feedback/export?type=invalid_type")
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 400);
+    }
+
+    #[actix_web::test]
+    async fn export_feedback_rejects_invalid_format() {
+        use actix_web::{test, web, App};
+        use crate::test_helpers::test_app_state;
+        let state = test_app_state().await;
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(state))
+                .route("/api/feedback/export", web::get().to(export_feedback))
+        ).await;
+        let req = test::TestRequest::get()
+            .uri("/api/feedback/export?format=csv")
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 400);
+    }
+
+    // ── real MongoDB tests (graceful skip when MongoDB is unavailable) ───────
+
+    async fn feedback_mongo_state() -> Option<crate::state::AppState> {
+        use crate::infra::mongo::MongoPool;
+        use crate::domain::safety::SafetyChecker;
+        use crate::infra::llm::LlmClient;
+        use crate::state::AppState;
+        use std::sync::Arc;
+        use dashmap::DashMap;
+        use tokio::sync::RwLock;
+        let pool = MongoPool::connect("mongodb://localhost:27017", "test_feedback_handlers").await.ok()?;
+        if pool.db().run_command(mongodb::bson::doc! { "ping": 1 }).await.is_err() {
+            return None;
+        }
+        // Clean slate
+        let _ = pool.db().collection::<mongodb::bson::Document>("query_feedback").drop().await;
+        let config = crate::test_helpers::test_config();
+        let llm = LlmClient::new(&config);
+        Some(AppState {
+            mongo: pool,
+            llm,
+            schemas: Arc::new(DashMap::new()),
+            safety: SafetyChecker::new(config.allowed_operations.clone(), config.max_result_rows),
+            http: reqwest::Client::new(),
+            issues: Arc::new(RwLock::new(vec![])),
+            config,
+        })
+    }
+
+    #[actix_web::test]
+    async fn submit_feedback_valid_body_returns_id() {
+        use actix_web::{test, web, App};
+        let state = match feedback_mongo_state().await { Some(s) => s, None => return };
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(state))
+                .route("/api/feedback", web::post().to(submit_feedback))
+        ).await;
+        let body = make_feedback_body(serde_json::json!({}));
+        let req = test::TestRequest::post().uri("/api/feedback").set_json(&body).to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 200);
+        let resp_body: serde_json::Value = test::read_body_json(resp).await;
+        assert!(resp_body.get("id").is_some());
+        assert!(resp_body["id"].as_str().unwrap().len() == 24); // ObjectId hex
+    }
+
+    #[actix_web::test]
+    async fn get_feedback_stats_empty_returns_zero_total() {
+        use actix_web::{test, web, App};
+        let state = match feedback_mongo_state().await { Some(s) => s, None => return };
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(state))
+                .route("/api/feedback/stats", web::get().to(get_feedback_stats))
+        ).await;
+        let req = test::TestRequest::get().uri("/api/feedback/stats").to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 200);
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body["total"], 0);
+    }
+
+    #[actix_web::test]
+    async fn export_feedback_json_empty_returns_array() {
+        use actix_web::{test, web, App};
+        let state = match feedback_mongo_state().await { Some(s) => s, None => return };
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(state))
+                .route("/api/feedback/export", web::get().to(export_feedback))
+        ).await;
+        let req = test::TestRequest::get()
+            .uri("/api/feedback/export?format=json")
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 200);
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert!(body.as_array().unwrap().is_empty());
+    }
+
+    #[actix_web::test]
+    async fn export_feedback_jsonl_empty_returns_empty_body() {
+        use actix_web::{test, web, App};
+        use actix_web::body::to_bytes;
+        let state = match feedback_mongo_state().await { Some(s) => s, None => return };
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(state))
+                .route("/api/feedback/export", web::get().to(export_feedback))
+        ).await;
+        let req = test::TestRequest::get()
+            .uri("/api/feedback/export?format=jsonl")
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 200);
+        let bytes = to_bytes(resp.into_body()).await.unwrap();
+        assert!(bytes.is_empty());
+    }
+
+    #[actix_web::test]
+    async fn export_feedback_dpo_jsonl_empty_returns_empty_body() {
+        use actix_web::{test, web, App};
+        use actix_web::body::to_bytes;
+        let state = match feedback_mongo_state().await { Some(s) => s, None => return };
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(state))
+                .route("/api/feedback/export", web::get().to(export_feedback))
+        ).await;
+        let req = test::TestRequest::get()
+            .uri("/api/feedback/export?format=dpo-jsonl")
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 200);
+        let bytes = to_bytes(resp.into_body()).await.unwrap();
+        assert!(bytes.is_empty());
+    }
 }

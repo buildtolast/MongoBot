@@ -1,4 +1,6 @@
 use mongodb::bson::{Bson, Document, doc};
+use mongodb::options::AggregateOptions;
+use std::time::Duration;
 use crate::domain::models::{ParsedQuery, QueryOperation, Filter, FilterOperator, CollectionSchema, IndexAnalysis};
 use crate::error::AppError;
 use crate::infra::mongo::MongoPool;
@@ -104,7 +106,10 @@ pub async fn execute(pool: &MongoPool, query: &ParsedQuery, schema: Option<&Coll
             };
 
             let coll = pool.collection(&query.collection);
-            let mut cursor = coll.aggregate(pipeline).await?;
+            let opts = AggregateOptions::builder()
+                .max_time(Duration::from_secs(30))
+                .build();
+            let mut cursor = coll.aggregate(pipeline).with_options(opts).await?;
 
             let mut results = Vec::new();
             use futures::TryStreamExt;
@@ -1450,5 +1455,869 @@ mod tests {
         assert!(cmd.contains("db.orders.aggregate"));
         assert!(cmd.contains("$match"));
         assert!(cmd.contains("$group"));
+    }
+
+    // ── try_parse_datetime ─────────────────────────────────────
+
+    #[test]
+    fn try_parse_datetime_bare_year() {
+        let result = try_parse_datetime("2010");
+        assert!(result.is_some());
+        assert!(matches!(result.unwrap(), Bson::DateTime(_)));
+    }
+
+    #[test]
+    fn try_parse_datetime_full_iso() {
+        assert!(try_parse_datetime("2026-01-15T12:00:00Z").is_some());
+    }
+
+    #[test]
+    fn try_parse_datetime_date_only() {
+        assert!(try_parse_datetime("2026-05-10").is_some());
+    }
+
+    #[test]
+    fn try_parse_datetime_iso_without_timezone() {
+        assert!(try_parse_datetime("2026-01-15T12:00:00").is_some());
+    }
+
+    #[test]
+    fn try_parse_datetime_non_date_strings() {
+        assert!(try_parse_datetime("hello").is_none());
+        assert!(try_parse_datetime("").is_none());
+        assert!(try_parse_datetime("action").is_none());
+    }
+
+    #[test]
+    fn try_parse_datetime_five_digits_not_a_date() {
+        assert!(try_parse_datetime("12345").is_none());
+    }
+
+    #[test]
+    fn try_parse_datetime_year_not_followed_by_dash() {
+        assert!(try_parse_datetime("2010a").is_none());
+    }
+
+    // ── coerce_value_for_field ─────────────────────────────────
+
+    #[test]
+    fn coerce_date_field_year_number_becomes_datetime() {
+        let val = serde_json::json!(2010);
+        let bson = coerce_value_for_field("release_date", &val).unwrap();
+        assert!(matches!(bson, Bson::DateTime(_)));
+    }
+
+    #[test]
+    fn coerce_date_field_year_out_of_range_stays_int() {
+        let val = serde_json::json!(1800);
+        let bson = coerce_value_for_field("created_at", &val).unwrap();
+        assert_eq!(bson, Bson::Int64(1800));
+    }
+
+    #[test]
+    fn coerce_non_date_field_passes_through() {
+        let val = serde_json::json!(42);
+        let bson = coerce_value_for_field("count", &val).unwrap();
+        assert_eq!(bson, Bson::Int64(42));
+    }
+
+    #[test]
+    fn coerce_released_field_recognized_as_date() {
+        let val = serde_json::json!(1999);
+        let bson = coerce_value_for_field("released", &val).unwrap();
+        assert!(matches!(bson, Bson::DateTime(_)));
+    }
+
+    // ── build_mongo_shell_command variants ─────────────────────
+
+    #[test]
+    fn shell_command_count() {
+        let query = ParsedQuery {
+            collection: "users".into(),
+            operation: QueryOperation::Count,
+            filters: vec![Filter {
+                field: "active".into(),
+                operator: FilterOperator::Eq,
+                value: serde_json::json!(true),
+            }],
+            ..Default::default()
+        };
+        let cmd = build_mongo_shell_command(&query);
+        assert!(cmd.starts_with("db.users.countDocuments("));
+    }
+
+    #[test]
+    fn shell_command_distinct() {
+        let query = ParsedQuery {
+            collection: "movies".into(),
+            operation: QueryOperation::Distinct,
+            projection: vec!["genre".into()],
+            ..Default::default()
+        };
+        let cmd = build_mongo_shell_command(&query);
+        assert!(cmd.contains("db.movies.distinct("));
+        assert!(cmd.contains("genre"));
+    }
+
+    #[test]
+    fn shell_command_find_with_projection_and_sort() {
+        use crate::domain::models::SortSpec;
+        let query = ParsedQuery {
+            collection: "actors".into(),
+            operation: QueryOperation::Find,
+            projection: vec!["name".into(), "age".into()],
+            sort: Some(SortSpec { field: "age".into(), order: -1 }),
+            limit: 5,
+            ..Default::default()
+        };
+        let cmd = build_mongo_shell_command(&query);
+        assert!(cmd.contains("db.actors.find("));
+        assert!(cmd.contains("name: 1"));
+        assert!(cmd.contains("age: 1"));
+        assert!(cmd.contains(".sort("));
+        assert!(cmd.contains(".limit(5)"));
+    }
+
+    // ── Edge cases ─────────────────────────────────────────────
+
+    #[test]
+    fn empty_text_search_not_inserted_into_filter() {
+        let query = ParsedQuery {
+            collection: "articles".into(),
+            text_search: Some("   ".into()),
+            ..Default::default()
+        };
+        let doc = build_filter(&query, None).unwrap();
+        assert!(!doc.contains_key("$text"));
+    }
+
+    #[test]
+    fn build_accumulator_expr_sum_with_field() {
+        let result = build_accumulator_expr("$sum", "amount").unwrap();
+        let doc = match result { Bson::Document(d) => d, _ => panic!("expected Document") };
+        assert_eq!(doc.get_str("$sum").unwrap(), "$amount");
+    }
+
+    #[test]
+    fn build_accumulator_expr_sum_count_literal() {
+        let result = build_accumulator_expr("sum", "1").unwrap();
+        let doc = match result { Bson::Document(d) => d, _ => panic!("expected Document") };
+        assert_eq!(doc.get_i64("$sum").unwrap(), 1);
+    }
+
+    #[test]
+    fn build_accumulator_expr_count_no_input() {
+        let result = build_accumulator_expr("$count", "ignored").unwrap();
+        let doc = match result { Bson::Document(d) => d, _ => panic!("expected Document") };
+        assert!(doc.contains_key("$count"));
+    }
+
+    #[test]
+    fn build_accumulator_expr_avg() {
+        let result = build_accumulator_expr("$avg", "score").unwrap();
+        let doc = match result { Bson::Document(d) => d, _ => panic!("expected Document") };
+        assert_eq!(doc.get_str("$avg").unwrap(), "$score");
+    }
+
+    // ── build_single_condition operator coverage ────────────────────────────
+
+    fn make_filter(field: &str, operator: FilterOperator, value: serde_json::Value) -> Filter {
+        Filter { field: field.to_string(), operator, value }
+    }
+
+    #[test]
+    fn build_single_condition_ne() {
+        let f = make_filter("year", FilterOperator::Ne, serde_json::json!(2000));
+        let result = build_single_condition(&f).unwrap();
+        let doc = match result { Bson::Document(d) => d, _ => panic!() };
+        assert!(doc.contains_key("$ne"));
+    }
+
+    #[test]
+    fn build_single_condition_gt() {
+        let f = make_filter("year", FilterOperator::Gt, serde_json::json!(2000));
+        let result = build_single_condition(&f).unwrap();
+        let doc = match result { Bson::Document(d) => d, _ => panic!() };
+        assert!(doc.contains_key("$gt"));
+    }
+
+    #[test]
+    fn build_single_condition_gte() {
+        let f = make_filter("year", FilterOperator::Gte, serde_json::json!(2000));
+        let result = build_single_condition(&f).unwrap();
+        let doc = match result { Bson::Document(d) => d, _ => panic!() };
+        assert!(doc.contains_key("$gte"));
+    }
+
+    #[test]
+    fn build_single_condition_lt() {
+        let f = make_filter("year", FilterOperator::Lt, serde_json::json!(2000));
+        let result = build_single_condition(&f).unwrap();
+        let doc = match result { Bson::Document(d) => d, _ => panic!() };
+        assert!(doc.contains_key("$lt"));
+    }
+
+    #[test]
+    fn build_single_condition_lte() {
+        let f = make_filter("year", FilterOperator::Lte, serde_json::json!(2000));
+        let result = build_single_condition(&f).unwrap();
+        let doc = match result { Bson::Document(d) => d, _ => panic!() };
+        assert!(doc.contains_key("$lte"));
+    }
+
+    #[test]
+    fn build_single_condition_in() {
+        let f = make_filter("genre", FilterOperator::In, serde_json::json!(["Action", "Drama"]));
+        let result = build_single_condition(&f).unwrap();
+        let doc = match result { Bson::Document(d) => d, _ => panic!() };
+        assert!(doc.contains_key("$in"));
+    }
+
+    #[test]
+    fn build_single_condition_nin() {
+        let f = make_filter("genre", FilterOperator::Nin, serde_json::json!(["Horror"]));
+        let result = build_single_condition(&f).unwrap();
+        let doc = match result { Bson::Document(d) => d, _ => panic!() };
+        assert!(doc.contains_key("$nin"));
+    }
+
+    #[test]
+    fn build_single_condition_contains() {
+        let f = make_filter("title", FilterOperator::Contains, serde_json::json!("War"));
+        let result = build_single_condition(&f).unwrap();
+        let doc = match result { Bson::Document(d) => d, _ => panic!() };
+        assert!(doc.contains_key("$regex"));
+        assert!(doc.contains_key("$options"));
+    }
+
+    #[test]
+    fn build_single_condition_regex() {
+        let f = make_filter("title", FilterOperator::Regex, serde_json::json!("^Star"));
+        let result = build_single_condition(&f).unwrap();
+        let doc = match result { Bson::Document(d) => d, _ => panic!() };
+        assert_eq!(doc.get_str("$regex").unwrap(), "^Star");
+    }
+
+    #[test]
+    fn build_single_condition_exists_true() {
+        let f = make_filter("email", FilterOperator::Exists, serde_json::json!(true));
+        let result = build_single_condition(&f).unwrap();
+        let doc = match result { Bson::Document(d) => d, _ => panic!() };
+        assert_eq!(doc.get_bool("$exists").unwrap(), true);
+    }
+
+    #[test]
+    fn build_single_condition_exists_false() {
+        let f = make_filter("email", FilterOperator::Exists, serde_json::json!(false));
+        let result = build_single_condition(&f).unwrap();
+        let doc = match result { Bson::Document(d) => d, _ => panic!() };
+        assert_eq!(doc.get_bool("$exists").unwrap(), false);
+    }
+
+    #[test]
+    fn build_single_condition_all() {
+        let f = make_filter("tags", FilterOperator::All, serde_json::json!(["rust", "web"]));
+        let result = build_single_condition(&f).unwrap();
+        let doc = match result { Bson::Document(d) => d, _ => panic!() };
+        assert!(doc.contains_key("$all"));
+    }
+
+    #[test]
+    fn build_single_condition_size() {
+        let f = make_filter("tags", FilterOperator::Size, serde_json::json!(3));
+        let result = build_single_condition(&f).unwrap();
+        let doc = match result { Bson::Document(d) => d, _ => panic!() };
+        assert!(doc.contains_key("$size"));
+    }
+
+    #[test]
+    fn build_single_condition_type() {
+        let f = make_filter("price", FilterOperator::Type, serde_json::json!("number"));
+        let result = build_single_condition(&f).unwrap();
+        let doc = match result { Bson::Document(d) => d, _ => panic!() };
+        assert!(doc.contains_key("$type"));
+    }
+
+    // ── build_filter coverage ───────────────────────────────────────────────
+
+    #[test]
+    fn build_filter_with_or_filters() {
+        let query = ParsedQuery {
+            collection: "movies".into(),
+            or_filters: vec![
+                vec![make_filter("genre", FilterOperator::Eq, serde_json::json!("Action"))],
+                vec![make_filter("genre", FilterOperator::Eq, serde_json::json!("Drama"))],
+            ],
+            ..Default::default()
+        };
+        let doc = build_filter(&query, None).unwrap();
+        assert!(doc.contains_key("$or"));
+    }
+
+    #[test]
+    fn build_filter_with_text_search() {
+        let query = ParsedQuery {
+            collection: "movies".into(),
+            text_search: Some("inception".into()),
+            ..Default::default()
+        };
+        let doc = build_filter(&query, None).unwrap();
+        assert!(doc.contains_key("$text"));
+    }
+
+    #[test]
+    fn build_filter_with_expr() {
+        let query = ParsedQuery {
+            collection: "orders".into(),
+            expr: Some(serde_json::json!({"$gt": ["$price", 100]})),
+            ..Default::default()
+        };
+        let doc = build_filter(&query, None).unwrap();
+        assert!(doc.contains_key("$expr"));
+    }
+
+    #[test]
+    fn build_filter_raw_filter_passthrough() {
+        let query = ParsedQuery {
+            collection: "movies".into(),
+            raw_filter: Some(serde_json::json!({"$or": [{"status": "active"}, {"priority": 1}]})),
+            ..Default::default()
+        };
+        let doc = build_filter(&query, None).unwrap();
+        assert!(doc.contains_key("$or"));
+    }
+
+    // ── json_to_bson coverage ──────────────────────────────────────────────
+
+    #[test]
+    fn json_to_bson_null() {
+        assert_eq!(json_to_bson(&serde_json::Value::Null).unwrap(), Bson::Null);
+    }
+
+    #[test]
+    fn json_to_bson_bool() {
+        assert_eq!(json_to_bson(&serde_json::json!(true)).unwrap(), Bson::Boolean(true));
+    }
+
+    #[test]
+    fn json_to_bson_integer() {
+        let result = json_to_bson(&serde_json::json!(42)).unwrap();
+        assert_eq!(result, Bson::Int64(42));
+    }
+
+    #[test]
+    fn json_to_bson_float() {
+        let result = json_to_bson(&serde_json::json!(3.14)).unwrap();
+        assert!(matches!(result, Bson::Double(_)));
+    }
+
+    #[test]
+    fn json_to_bson_string() {
+        let result = json_to_bson(&serde_json::json!("hello")).unwrap();
+        assert_eq!(result, Bson::String("hello".into()));
+    }
+
+    #[test]
+    fn json_to_bson_date_string_becomes_datetime() {
+        let result = json_to_bson(&serde_json::json!("2026-01-01T00:00:00Z")).unwrap();
+        assert!(matches!(result, Bson::DateTime(_)));
+    }
+
+    #[test]
+    fn json_to_bson_array() {
+        let result = json_to_bson(&serde_json::json!([1, 2, 3])).unwrap();
+        assert!(matches!(result, Bson::Array(_)));
+    }
+
+    #[test]
+    fn json_to_bson_object() {
+        let result = json_to_bson(&serde_json::json!({"key": "val"})).unwrap();
+        assert!(matches!(result, Bson::Document(_)));
+    }
+
+    // ── to_bson_array coverage ─────────────────────────────────────────────
+
+    #[test]
+    fn to_bson_array_null_returns_error() {
+        let result = to_bson_array(&serde_json::Value::Null);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn to_bson_array_scalar_wraps_in_array() {
+        let result = to_bson_array(&serde_json::json!("single")).unwrap();
+        if let Bson::Array(arr) = result {
+            assert_eq!(arr.len(), 1);
+        } else {
+            panic!("expected array");
+        }
+    }
+
+    // ── regex_escape coverage ──────────────────────────────────────────────
+
+    #[test]
+    fn regex_escape_special_chars() {
+        let escaped = regex_escape("a.b*c");
+        assert!(escaped.contains("\\."));
+        assert!(escaped.contains("\\*"));
+    }
+
+    #[test]
+    fn regex_escape_plain_text_unchanged() {
+        let escaped = regex_escape("hello world");
+        assert_eq!(escaped, "hello world");
+    }
+
+    // ── analyze_index_usage coverage ─────────────────────────────────────
+
+    #[test]
+    fn analyze_index_usage_with_no_schema() {
+        let query = ParsedQuery {
+            collection: "movies".into(),
+            filters: vec![make_filter("title", FilterOperator::Eq, serde_json::json!("Inception"))],
+            ..Default::default()
+        };
+        let analysis = analyze_index_usage(&query, None);
+        // Without schema, returns minimal analysis without panicking
+        assert!(!analysis.index_used);
+    }
+
+    #[test]
+    fn analyze_index_usage_with_schema_and_matching_index() {
+        let schema = make_schema(&[("title", "string"), ("year", "number")]);
+        let mut schema = schema;
+        schema.indexes.push(crate::domain::models::IndexInfo {
+            name: "title_idx".into(),
+            keys: vec![crate::domain::models::IndexKey { field: "title".into(), direction: 1 }],
+            unique: false,
+        });
+        let query = ParsedQuery {
+            collection: "movies".into(),
+            filters: vec![make_filter("title", FilterOperator::Eq, serde_json::json!("Inception"))],
+            ..Default::default()
+        };
+        let analysis = analyze_index_usage(&query, Some(&schema));
+        assert!(analysis.index_used);
+        assert!(analysis.matching_index.is_some());
+    }
+
+    #[test]
+    fn analyze_index_usage_identifies_unindexed_fields() {
+        let schema = make_schema(&[("title", "string"), ("year", "number")]);
+        let query = ParsedQuery {
+            collection: "movies".into(),
+            filters: vec![make_filter("year", FilterOperator::Gt, serde_json::json!(2000))],
+            ..Default::default()
+        };
+        let analysis = analyze_index_usage(&query, Some(&schema));
+        assert!(!analysis.index_used);
+        assert!(analysis.unindexed_fields.iter().any(|f| f == "year"));
+    }
+
+    // ── build_aggregate_pipeline coverage ─────────────────────────────────
+
+    #[test]
+    fn build_aggregate_pipeline_with_match_filter() {
+        let query = ParsedQuery {
+            collection: "movies".into(),
+            limit: 10,
+            ..Default::default()
+        };
+        let match_filter = doc! { "year": { "$gt": 2000 } };
+        let pipeline = build_aggregate_pipeline(&query, &match_filter).unwrap();
+        assert!(pipeline.iter().any(|d| d.contains_key("$match")));
+        assert!(pipeline.iter().any(|d| d.contains_key("$limit")));
+    }
+
+    #[test]
+    fn build_aggregate_pipeline_empty_match_skipped() {
+        let query = ParsedQuery {
+            collection: "movies".into(),
+            limit: 5,
+            ..Default::default()
+        };
+        let match_filter = Document::new(); // empty
+        let pipeline = build_aggregate_pipeline(&query, &match_filter).unwrap();
+        assert!(!pipeline.iter().any(|d| d.contains_key("$match")));
+        assert!(pipeline.iter().any(|d| d.contains_key("$limit")));
+    }
+
+    #[test]
+    fn build_aggregate_pipeline_with_lookup() {
+        let query = ParsedQuery {
+            collection: "orders".into(),
+            limit: 10,
+            lookup: Some(crate::domain::models::LookupSpec {
+                from: "customers".into(),
+                local_field: "customer_id".into(),
+                foreign_field: "_id".into(),
+                as_field: "customer".into(),
+            }),
+            ..Default::default()
+        };
+        let pipeline = build_aggregate_pipeline(&query, &Document::new()).unwrap();
+        assert!(pipeline.iter().any(|d| d.contains_key("$lookup")));
+    }
+
+    #[test]
+    fn build_aggregate_pipeline_with_unwind() {
+        let query = ParsedQuery {
+            collection: "orders".into(),
+            limit: 10,
+            unwind: Some("items".into()), // no $ prefix
+            ..Default::default()
+        };
+        let pipeline = build_aggregate_pipeline(&query, &Document::new()).unwrap();
+        let unwind = pipeline.iter().find(|d| d.contains_key("$unwind")).unwrap();
+        assert_eq!(unwind.get_str("$unwind").unwrap(), "$items");
+    }
+
+    #[test]
+    fn build_aggregate_pipeline_unwind_with_dollar_prefix() {
+        let query = ParsedQuery {
+            collection: "orders".into(),
+            limit: 10,
+            unwind: Some("$items".into()),
+            ..Default::default()
+        };
+        let pipeline = build_aggregate_pipeline(&query, &Document::new()).unwrap();
+        let unwind = pipeline.iter().find(|d| d.contains_key("$unwind")).unwrap();
+        assert_eq!(unwind.get_str("$unwind").unwrap(), "$items");
+    }
+
+    #[test]
+    fn build_aggregate_pipeline_with_group_by() {
+        use crate::domain::models::{GroupSpec, Accumulator};
+        let query = ParsedQuery {
+            collection: "orders".into(),
+            limit: 10,
+            group_by: Some(GroupSpec {
+                field: "category".into(),
+                accumulators: vec![Accumulator {
+                    output_field: "total".into(),
+                    operator: "$sum".into(),
+                    input_field: "amount".into(),
+                }],
+            }),
+            ..Default::default()
+        };
+        let pipeline = build_aggregate_pipeline(&query, &Document::new()).unwrap();
+        assert!(pipeline.iter().any(|d| d.contains_key("$group")));
+    }
+
+    #[test]
+    fn build_aggregate_pipeline_with_null_group_field() {
+        use crate::domain::models::{GroupSpec, Accumulator};
+        let query = ParsedQuery {
+            collection: "orders".into(),
+            limit: 10,
+            group_by: Some(GroupSpec {
+                field: "null".into(),
+                accumulators: vec![Accumulator {
+                    output_field: "count".into(),
+                    operator: "$count".into(),
+                    input_field: "ignored".into(),
+                }],
+            }),
+            ..Default::default()
+        };
+        let pipeline = build_aggregate_pipeline(&query, &Document::new()).unwrap();
+        let group_stage = pipeline.iter().find(|d| d.contains_key("$group")).unwrap();
+        let group_doc = group_stage.get_document("$group").unwrap();
+        assert!(group_doc.get("_id").is_some());
+    }
+
+    #[test]
+    fn build_aggregate_pipeline_with_bucket() {
+        use crate::domain::models::BucketSpec;
+        let query = ParsedQuery {
+            collection: "movies".into(),
+            limit: 10,
+            bucket: Some(BucketSpec {
+                group_by: "year".into(),
+                boundaries: vec![serde_json::json!(1990), serde_json::json!(2000), serde_json::json!(2010)],
+                default_bucket: None,
+            }),
+            ..Default::default()
+        };
+        let pipeline = build_aggregate_pipeline(&query, &Document::new()).unwrap();
+        assert!(pipeline.iter().any(|d| d.contains_key("$bucket")));
+    }
+
+    #[test]
+    fn build_aggregate_pipeline_with_bucket_default() {
+        use crate::domain::models::BucketSpec;
+        let query = ParsedQuery {
+            collection: "movies".into(),
+            limit: 10,
+            bucket: Some(BucketSpec {
+                group_by: "$year".into(), // with $ prefix
+                boundaries: vec![serde_json::json!(2000), serde_json::json!(2010)],
+                default_bucket: Some("Other".into()),
+            }),
+            ..Default::default()
+        };
+        let pipeline = build_aggregate_pipeline(&query, &Document::new()).unwrap();
+        let bucket_stage = pipeline.iter().find(|d| d.contains_key("$bucket")).unwrap();
+        let bucket = bucket_stage.get_document("$bucket").unwrap();
+        assert_eq!(bucket.get_str("default").unwrap(), "Other");
+    }
+
+    #[test]
+    fn build_aggregate_pipeline_with_sort_and_projection() {
+        let query = ParsedQuery {
+            collection: "movies".into(),
+            limit: 5,
+            sort: Some(crate::domain::models::SortSpec { field: "year".into(), order: -1 }),
+            projection: vec!["title".into(), "year".into()],
+            ..Default::default()
+        };
+        let pipeline = build_aggregate_pipeline(&query, &Document::new()).unwrap();
+        assert!(pipeline.iter().any(|d| d.contains_key("$sort")));
+        assert!(pipeline.iter().any(|d| d.contains_key("$project")));
+    }
+
+    #[test]
+    fn build_aggregate_pipeline_with_facet() {
+        let query = ParsedQuery {
+            collection: "movies".into(),
+            limit: 10,
+            facet: Some(serde_json::json!({
+                "byYear": [{"$group": {"_id": "$year"}}]
+            })),
+            ..Default::default()
+        };
+        let pipeline = build_aggregate_pipeline(&query, &Document::new()).unwrap();
+        assert!(pipeline.iter().any(|d| d.contains_key("$facet")));
+    }
+
+    // ── build_accumulator_expr — remaining operators ───────────────────────
+
+    #[test]
+    fn build_accumulator_expr_min() {
+        let result = build_accumulator_expr("$min", "price").unwrap();
+        let doc = match result { Bson::Document(d) => d, _ => panic!() };
+        assert_eq!(doc.get_str("$min").unwrap(), "$price");
+    }
+
+    #[test]
+    fn build_accumulator_expr_max() {
+        let result = build_accumulator_expr("$max", "score").unwrap();
+        let doc = match result { Bson::Document(d) => d, _ => panic!() };
+        assert_eq!(doc.get_str("$max").unwrap(), "$score");
+    }
+
+    #[test]
+    fn build_accumulator_expr_first() {
+        let result = build_accumulator_expr("$first", "name").unwrap();
+        let doc = match result { Bson::Document(d) => d, _ => panic!() };
+        assert_eq!(doc.get_str("$first").unwrap(), "$name");
+    }
+
+    #[test]
+    fn build_accumulator_expr_last() {
+        let result = build_accumulator_expr("$last", "ts").unwrap();
+        let doc = match result { Bson::Document(d) => d, _ => panic!() };
+        assert_eq!(doc.get_str("$last").unwrap(), "$ts");
+    }
+
+    #[test]
+    fn build_accumulator_expr_push() {
+        let result = build_accumulator_expr("$push", "item").unwrap();
+        let doc = match result { Bson::Document(d) => d, _ => panic!() };
+        assert_eq!(doc.get_str("$push").unwrap(), "$item");
+    }
+
+    #[test]
+    fn build_accumulator_expr_add_to_set() {
+        let result = build_accumulator_expr("$addToSet", "tag").unwrap();
+        let doc = match result { Bson::Document(d) => d, _ => panic!() };
+        assert_eq!(doc.get_str("$addToSet").unwrap(), "$tag");
+    }
+
+    #[test]
+    fn build_accumulator_expr_unknown_returns_error() {
+        let result = build_accumulator_expr("$unknownOp", "val");
+        assert!(result.is_err());
+    }
+
+    // ── build_mongo_shell_command — Insert / Update / Delete ───
+
+    #[test]
+    fn shell_command_insert_one() {
+        let query = ParsedQuery {
+            collection: "movies".into(),
+            operation: QueryOperation::Insert,
+            document: Some(serde_json::json!({"title": "Inception", "year": 2010})),
+            ..Default::default()
+        };
+        let cmd = build_mongo_shell_command(&query);
+        assert!(cmd.starts_with("db.movies.insertOne("));
+        assert!(cmd.contains("Inception"));
+    }
+
+    #[test]
+    fn shell_command_insert_no_document_uses_empty_doc() {
+        let query = ParsedQuery {
+            collection: "logs".into(),
+            operation: QueryOperation::Insert,
+            document: None,
+            ..Default::default()
+        };
+        let cmd = build_mongo_shell_command(&query);
+        assert!(cmd.contains("insertOne({})"));
+    }
+
+    #[test]
+    fn shell_command_update_one() {
+        let query = ParsedQuery {
+            collection: "users".into(),
+            operation: QueryOperation::Update,
+            filters: vec![Filter { field: "name".into(), operator: FilterOperator::Eq, value: serde_json::json!("Alice") }],
+            update_fields: Some(serde_json::json!({"status": "active"})),
+            update_many: false,
+            ..Default::default()
+        };
+        let cmd = build_mongo_shell_command(&query);
+        assert!(cmd.contains("db.users.updateOne("));
+        assert!(cmd.contains("$set"));
+        assert!(cmd.contains("status"));
+    }
+
+    #[test]
+    fn shell_command_update_many() {
+        let query = ParsedQuery {
+            collection: "users".into(),
+            operation: QueryOperation::Update,
+            filters: vec![Filter { field: "active".into(), operator: FilterOperator::Eq, value: serde_json::json!(false) }],
+            update_fields: Some(serde_json::json!({"status": "inactive"})),
+            update_many: true,
+            ..Default::default()
+        };
+        let cmd = build_mongo_shell_command(&query);
+        assert!(cmd.contains("db.users.updateMany("));
+    }
+
+    #[test]
+    fn shell_command_delete_one() {
+        let query = ParsedQuery {
+            collection: "logs".into(),
+            operation: QueryOperation::Delete,
+            filters: vec![Filter { field: "level".into(), operator: FilterOperator::Eq, value: serde_json::json!("debug") }],
+            delete_many: false,
+            ..Default::default()
+        };
+        let cmd = build_mongo_shell_command(&query);
+        assert!(cmd.contains("db.logs.deleteOne("));
+    }
+
+    #[test]
+    fn shell_command_delete_many() {
+        let query = ParsedQuery {
+            collection: "logs".into(),
+            operation: QueryOperation::Delete,
+            filters: vec![Filter { field: "level".into(), operator: FilterOperator::Eq, value: serde_json::json!("debug") }],
+            delete_many: true,
+            ..Default::default()
+        };
+        let cmd = build_mongo_shell_command(&query);
+        assert!(cmd.contains("db.logs.deleteMany("));
+    }
+
+    #[test]
+    fn shell_command_aggregate_with_lookup_unwind_group_bucket_facet() {
+        use crate::domain::models::{GroupSpec, Accumulator, LookupSpec, BucketSpec, SortSpec};
+        let query = ParsedQuery {
+            collection: "orders".into(),
+            operation: QueryOperation::Aggregate,
+            lookup: Some(LookupSpec {
+                from: "customers".into(),
+                local_field: "cid".into(),
+                foreign_field: "_id".into(),
+                as_field: "customer".into(),
+            }),
+            unwind: Some("items".into()),
+            group_by: Some(GroupSpec {
+                field: "category".into(),
+                accumulators: vec![Accumulator {
+                    output_field: "total".into(),
+                    operator: "$sum".into(),
+                    input_field: "price".into(),
+                }],
+            }),
+            bucket: Some(BucketSpec {
+                group_by: "price".into(),
+                boundaries: vec![serde_json::json!(0), serde_json::json!(10), serde_json::json!(100)],
+                default_bucket: Some("Other".into()),
+            }),
+            facet: Some(serde_json::json!({"byCat": []})),
+            sort: Some(SortSpec { field: "total".into(), order: -1 }),
+            ..Default::default()
+        };
+        let cmd = build_mongo_shell_command(&query);
+        assert!(cmd.contains("$lookup"));
+        assert!(cmd.contains("$unwind"));
+        assert!(cmd.contains("$group"));
+        assert!(cmd.contains("$bucket"));
+        assert!(cmd.contains("$facet"));
+        assert!(cmd.contains("$sort"));
+    }
+
+    #[test]
+    fn shell_command_distinct_falls_back_to_filter_field() {
+        let query = ParsedQuery {
+            collection: "movies".into(),
+            operation: QueryOperation::Distinct,
+            projection: vec![],  // empty projection
+            filters: vec![Filter { field: "genre".into(), operator: FilterOperator::Eq, value: serde_json::json!("Action") }],
+            ..Default::default()
+        };
+        let cmd = build_mongo_shell_command(&query);
+        assert!(cmd.contains("genre"));
+    }
+
+    #[test]
+    fn shell_command_distinct_empty_projection_and_filter_uses_id() {
+        let query = ParsedQuery {
+            collection: "movies".into(),
+            operation: QueryOperation::Distinct,
+            projection: vec![],
+            filters: vec![],
+            ..Default::default()
+        };
+        let cmd = build_mongo_shell_command(&query);
+        assert!(cmd.contains("_id"));
+    }
+
+    // ── format_bson_doc ────────────────────────────────────────
+
+    #[test]
+    fn format_bson_doc_empty_returns_braces() {
+        let doc = mongodb::bson::Document::new();
+        assert_eq!(format_bson_doc(&doc), "{}");
+    }
+
+    #[test]
+    fn format_bson_doc_with_fields_returns_key_value() {
+        let doc = mongodb::bson::doc! { "title": "Inception" };
+        let formatted = format_bson_doc(&doc);
+        assert!(formatted.contains("title"));
+        assert!(formatted.contains("Inception"));
+    }
+
+    // ── coerce_value_for_field — ISO string ────────────────────
+
+    #[test]
+    fn coerce_date_field_iso_string_becomes_datetime() {
+        let val = serde_json::json!("2026-01-15T00:00:00Z");
+        let bson = coerce_value_for_field("release_date", &val).unwrap();
+        assert!(matches!(bson, Bson::DateTime(_)));
+    }
+
+    #[test]
+    fn coerce_non_date_field_string_passes_through() {
+        let val = serde_json::json!("hello");
+        let bson = coerce_value_for_field("title", &val).unwrap();
+        assert!(matches!(bson, Bson::String(_)));
     }
 }

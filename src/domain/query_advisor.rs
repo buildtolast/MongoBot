@@ -1,5 +1,5 @@
 use crate::domain::models::{
-    CollectionSchema, FilterOperator, ParsedQuery, QueryOperation,
+    CollectionSchema, FilterOperator, IndexInfo, ParsedQuery, QueryOperation,
 };
 
 /// Query analysis result with warnings and optimization suggestions.
@@ -53,6 +53,7 @@ pub fn analyze_query(
     check_not_equals_performance(query, &mut advice);
     check_case_sensitivity(query, schema, &mut advice);
     check_empty_filters_on_large_collection(query, schema, &mut advice);
+    check_filter_no_index(query, schema, &mut advice);
     check_sort_without_index(query, schema, &mut advice);
     check_contains_on_large_field(query, &mut advice);
     check_multiple_array_filters(query, &mut advice);
@@ -279,6 +280,123 @@ fn check_empty_filters_on_large_collection(
                 query.collection, field_count
             ),
         ));
+    }
+}
+
+/// Check filter fields against existing indexes using the ESR (Equality → Sort → Range) strategy.
+///
+/// ESR compound index key ordering:
+///   1. Equality fields first  — `$eq`, `$in` (bounded discrete set)
+///   2. Sort field next        — matches MongoDB's in-order traversal
+///   3. Range fields last      — `$gt/$lt/$gte/$lte`, `$ne/$nin`, regex, contains
+///
+/// Three outcomes:
+///   - All query fields are covered by an existing index in ESR order → no advice (index is fine).
+///   - All fields are covered but in the wrong order → ESR_REWRITE (info): reorder, no new index.
+///   - Fields are not covered by any existing index → FILTER_NO_INDEX (warning): suggest one
+///     compound ESR index, not N individual single-field indexes.
+fn check_filter_no_index(
+    query: &ParsedQuery,
+    schema: Option<&CollectionSchema>,
+    advice: &mut Vec<QueryAdvice>,
+) {
+    if query.filters.is_empty() {
+        return;
+    }
+    let schema = match schema {
+        Some(s) => s,
+        None => return,
+    };
+
+    // Only emit when schema has at least one real (non-_id) index — proves index info is populated.
+    let non_id_indexes: Vec<&IndexInfo> = schema.indexes.iter()
+        .filter(|i| i.name != "_id_")
+        .collect();
+    if non_id_indexes.is_empty() {
+        return;
+    }
+
+    // ── Classify filter fields by ESR role ───────────────────────────────────────
+    let mut eq_fields: Vec<&str> = Vec::new();
+    let mut range_fields: Vec<&str> = Vec::new();
+
+    for f in &query.filters {
+        let field = f.field.as_str();
+        match f.operator {
+            FilterOperator::Eq | FilterOperator::In => {
+                if !eq_fields.contains(&field) { eq_fields.push(field); }
+            }
+            FilterOperator::Gt | FilterOperator::Gte |
+            FilterOperator::Lt | FilterOperator::Lte |
+            FilterOperator::Ne | FilterOperator::Nin |
+            FilterOperator::Regex | FilterOperator::Contains => {
+                if !range_fields.contains(&field) { range_fields.push(field); }
+            }
+            _ => {} // Exists, All, Size, Type — not index-selective
+        }
+    }
+
+    // Sort field sits between E and R in the compound key
+    let sort_field = query.sort.as_ref().map(|s| s.field.as_str());
+
+    // ── Build ideal ESR field order ───────────────────────────────────────────────
+    let mut esr: Vec<&str> = Vec::new();
+    for f in &eq_fields   { if !esr.contains(f) { esr.push(f); } }
+    if let Some(sf) = sort_field {
+        if !esr.contains(&sf) { esr.push(sf); }
+    }
+    for f in &range_fields { if !esr.contains(f) { esr.push(f); } }
+
+    if esr.is_empty() {
+        return;
+    }
+
+    // ── Check existing indexes ────────────────────────────────────────────────────
+    // An index "covers" the query if its key list contains every ESR field (as a prefix or superset).
+    let covering = non_id_indexes.iter().find(|idx| {
+        let keys: Vec<&str> = idx.keys.iter().map(|k| k.field.as_str()).collect();
+        esr.iter().all(|f| keys.contains(f))
+    });
+
+    match covering {
+        Some(idx) => {
+            // Index contains all fields — is it already in ESR order?
+            let keys: Vec<&str> = idx.keys.iter().map(|k| k.field.as_str()).collect();
+            let already_esr = keys.iter().take(esr.len())
+                .zip(esr.iter())
+                .all(|(a, b)| a == b);
+
+            if !already_esr {
+                // Existing index covers the query — no new index needed, just reorder
+                advice.push(QueryAdvice::info(
+                    "ESR_REWRITE",
+                    format!(
+                        "Index '{}' already covers all query fields. \
+                         Reordering filters to ESR (Equality→Sort→Range: {}) \
+                         lets MongoDB use it without creating a new index.",
+                        idx.name,
+                        esr.iter().map(|f| format!("'{f}'")).collect::<Vec<_>>().join(" → "),
+                    ),
+                ));
+            }
+            // Already in ESR order → no advice needed
+        }
+        None => {
+            // No existing index covers the query — suggest one compound ESR index
+            let esr_spec = esr.iter()
+                .map(|f| format!("{f}: 1"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            advice.push(QueryAdvice::warning(
+                "FILTER_NO_INDEX",
+                format!(
+                    "No index covers this query on '{}'. \
+                     Consider a compound ESR (Equality→Sort→Range) index: \
+                     db.{}.createIndex({{ {} }})",
+                    schema.name, schema.name, esr_spec,
+                ),
+            ));
+        }
     }
 }
 
@@ -641,6 +759,15 @@ mod tests {
                 field: field.to_string(),
                 direction: 1,
             }],
+            unique: false,
+        }
+    }
+
+    fn compound_index(fields: &[&str]) -> IndexInfo {
+        let name = fields.iter().map(|f| format!("{f}_1")).collect::<Vec<_>>().join("_");
+        IndexInfo {
+            name,
+            keys: fields.iter().map(|f| IndexKey { field: f.to_string(), direction: 1 }).collect(),
             unique: false,
         }
     }
@@ -1031,6 +1158,136 @@ mod tests {
             "Expected no warnings/errors, got: {:?}",
             warnings_or_errors
         );
+    }
+
+    // ── check_filter_no_index ─────────────────────────────────
+
+    #[test]
+    fn filter_no_index_warns_when_field_unindexed() {
+        let q = make_find(
+            vec![string_filter("email", FilterOperator::Eq, "test@example.com")],
+            100,
+        );
+        // Schema has one real index (not on email)
+        let schema = make_schema(5, vec![index_on("username")]);
+        let advice = analyze_query(&q, Some(&schema));
+        assert!(advice.iter().any(|a| a.code == "FILTER_NO_INDEX"));
+    }
+
+    #[test]
+    fn filter_no_index_silent_when_field_is_indexed() {
+        let q = make_find(
+            vec![string_filter("username", FilterOperator::Eq, "alice")],
+            100,
+        );
+        let schema = make_schema(5, vec![index_on("username")]);
+        let advice = analyze_query(&q, Some(&schema));
+        assert!(!advice.iter().any(|a| a.code == "FILTER_NO_INDEX"));
+    }
+
+    #[test]
+    fn filter_no_index_silent_when_only_id_index() {
+        // If the schema only has _id_, we have no real index info — stay quiet
+        let q = make_find(
+            vec![string_filter("email", FilterOperator::Eq, "x@y.com")],
+            100,
+        );
+        let schema = make_schema(3, vec![]);  // make_schema adds no indexes
+        let advice = analyze_query(&q, Some(&schema));
+        assert!(!advice.iter().any(|a| a.code == "FILTER_NO_INDEX"));
+    }
+
+    #[test]
+    fn esr_rewrite_suggested_when_compound_index_covers_but_wrong_order() {
+        // Existing compound index is {year, status} but query filters equality on status then
+        // range on year — ESR order would be {status, year}. Index exists, just reorder.
+        let q = ParsedQuery {
+            collection: "movies".to_string(),
+            operation: QueryOperation::Find,
+            filters: vec![
+                string_filter("status", FilterOperator::Eq, "active"),
+                num_filter("year", FilterOperator::Gt, 2000),
+            ],
+            limit: 50,
+            ..Default::default()
+        };
+        let schema = make_schema(5, vec![compound_index(&["year", "status"])]);
+        let advice = analyze_query(&q, Some(&schema));
+        assert!(advice.iter().any(|a| a.code == "ESR_REWRITE"),
+            "Expected ESR_REWRITE, got: {:?}", advice);
+        assert!(!advice.iter().any(|a| a.code == "FILTER_NO_INDEX"),
+            "Should not suggest new index when existing one covers query");
+    }
+
+    #[test]
+    fn esr_no_advice_when_compound_index_already_in_esr_order() {
+        // Index is {status, year} — query has equality on status, range on year. Already ESR.
+        let q = ParsedQuery {
+            collection: "movies".to_string(),
+            operation: QueryOperation::Find,
+            filters: vec![
+                string_filter("status", FilterOperator::Eq, "active"),
+                num_filter("year", FilterOperator::Gt, 2000),
+            ],
+            limit: 50,
+            ..Default::default()
+        };
+        let schema = make_schema(5, vec![compound_index(&["status", "year"])]);
+        let advice = analyze_query(&q, Some(&schema));
+        assert!(!advice.iter().any(|a| a.code == "FILTER_NO_INDEX" || a.code == "ESR_REWRITE"),
+            "No index advice expected when query already matches ESR order: {:?}", advice);
+    }
+
+    #[test]
+    fn esr_compound_index_suggested_for_multi_field_query() {
+        // No useful index at all — should suggest one compound ESR index, not individual ones
+        let q = ParsedQuery {
+            collection: "orders".to_string(),
+            operation: QueryOperation::Find,
+            filters: vec![
+                string_filter("status", FilterOperator::Eq, "pending"),
+                num_filter("amount", FilterOperator::Gt, 100),
+            ],
+            sort: Some(SortSpec { field: "created_at".to_string(), order: -1 }),
+            limit: 50,
+            ..Default::default()
+        };
+        let schema = make_schema(5, vec![index_on("other_field")]);
+        let advice = analyze_query(&q, Some(&schema));
+        let no_index = advice.iter().find(|a| a.code == "FILTER_NO_INDEX");
+        assert!(no_index.is_some(), "Expected FILTER_NO_INDEX: {:?}", advice);
+        // Message should suggest compound ESR index: status (E), created_at (S), amount (R)
+        let msg = &no_index.unwrap().message;
+        assert!(msg.contains("status"), "ESR index should include equality field 'status'");
+        assert!(msg.contains("created_at"), "ESR index should include sort field 'created_at'");
+        assert!(msg.contains("amount"), "ESR index should include range field 'amount'");
+    }
+
+    #[test]
+    fn esr_sort_field_included_in_compound_suggestion() {
+        // Query: equality on genre, sort on year, range on rating — ESR: {genre, year, rating}
+        let q = ParsedQuery {
+            collection: "movies".to_string(),
+            operation: QueryOperation::Find,
+            filters: vec![
+                string_filter("genre", FilterOperator::Eq, "Action"),
+                num_filter("rating", FilterOperator::Gte, 7),
+            ],
+            sort: Some(SortSpec { field: "year".to_string(), order: -1 }),
+            limit: 50,
+            ..Default::default()
+        };
+        let schema = make_schema(5, vec![index_on("unrelated")]);
+        let advice = analyze_query(&q, Some(&schema));
+        let no_index = advice.iter().find(|a| a.code == "FILTER_NO_INDEX");
+        assert!(no_index.is_some());
+        let msg = &no_index.unwrap().message;
+        // ESR order: genre (E) → year (S) → rating (R)
+        let genre_pos = msg.find("genre").unwrap();
+        let year_pos  = msg.find("year").unwrap();
+        let rating_pos = msg.find("rating").unwrap();
+        assert!(genre_pos < year_pos,  "genre (E) must come before year (S) in suggestion");
+        assert!(year_pos  < rating_pos, "year (S) must come before rating (R) in suggestion");
     }
 
     // ── New advisory rules ──────────────────────────────────────

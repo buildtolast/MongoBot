@@ -259,11 +259,155 @@ fn strip_bot_mention(text: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::executor::{QueryResult, WriteResultData};
 
     #[test]
     fn test_strip_bot_mention() {
         assert_eq!(strip_bot_mention("<@U123> find users"), "find users");
         assert_eq!(strip_bot_mention("  <@U123>  hello "), "hello");
         assert_eq!(strip_bot_mention("no mention"), "no mention");
+    }
+
+    #[test]
+    fn strip_bot_mention_no_closing_bracket() {
+        // Malformed mention without '>' — returns trimmed original
+        assert_eq!(strip_bot_mention("<@U123 find users"), "<@U123 find users");
+    }
+
+    // ── format_slack_result ──────────────────────────────────────
+
+    #[test]
+    fn format_slack_result_documents_under_limit() {
+        let docs = vec![
+            mongodb::bson::doc! { "title": "Movie1" },
+            mongodb::bson::doc! { "title": "Movie2" },
+        ];
+        let result = QueryResult::Documents(docs);
+        let text = format_slack_result("movies", "find", &result);
+        assert!(text.contains("2 result(s)"));
+        assert!(text.contains("```"));
+        // No "...and N more" suffix when count <= 5
+        assert!(!text.contains("more"));
+    }
+
+    #[test]
+    fn format_slack_result_documents_over_limit_shows_more() {
+        let docs: Vec<_> = (0..7).map(|i| mongodb::bson::doc! { "i": i }).collect();
+        let result = QueryResult::Documents(docs);
+        let text = format_slack_result("logs", "find", &result);
+        assert!(text.contains("7 result(s)"));
+        assert!(text.contains("2 more"));
+    }
+
+    #[test]
+    fn format_slack_result_count() {
+        let result = QueryResult::Count(42);
+        let text = format_slack_result("users", "count", &result);
+        assert!(text.contains("count: *42*"));
+        assert!(text.contains("users"));
+    }
+
+    #[test]
+    fn format_slack_result_values() {
+        use mongodb::bson::Bson;
+        let result = QueryResult::Values(vec![Bson::String("Action".into()), Bson::String("Drama".into())]);
+        let text = format_slack_result("movies", "distinct", &result);
+        assert!(text.contains("2 distinct value(s)"));
+        assert!(text.contains("Action"));
+    }
+
+    #[test]
+    fn format_slack_result_write_without_inserted_id() {
+        let result = QueryResult::Write(WriteResultData {
+            operation: "update".into(),
+            collection: "users".into(),
+            matched_count: 5,
+            modified_count: 3,
+            inserted_id: None,
+        });
+        let text = format_slack_result("users", "update", &result);
+        assert!(text.contains("matched: 5"));
+        assert!(text.contains("modified: 3"));
+        assert!(!text.contains("Inserted ID"));
+    }
+
+    #[test]
+    fn format_slack_result_write_with_inserted_id() {
+        let result = QueryResult::Write(WriteResultData {
+            operation: "insert".into(),
+            collection: "orders".into(),
+            matched_count: 0,
+            modified_count: 0,
+            inserted_id: Some("abc123".into()),
+        });
+        let text = format_slack_result("orders", "insert", &result);
+        assert!(text.contains("Inserted ID"));
+        assert!(text.contains("abc123"));
+    }
+
+    // ── Handler integration tests ────────────────────────────────
+
+    #[actix_web::test]
+    async fn handle_slash_command_empty_text_returns_usage() {
+        use actix_web::{test, web, App};
+        use crate::test_helpers::test_app_state;
+        let state = test_app_state().await;
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(state))
+                .route("/api/slack/commands", web::post().to(handle_slash_command))
+        ).await;
+        let form_data = "token=test&team_id=T1&channel_id=C1&user_id=U1&command=%2Fquery&text=&response_url=http%3A%2F%2Flocalhost%2Fcallback";
+        let req = test::TestRequest::post()
+            .uri("/api/slack/commands")
+            .insert_header(("Content-Type", "application/x-www-form-urlencoded"))
+            .set_payload(form_data)
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 200);
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body["response_type"], "ephemeral");
+        assert!(body["text"].as_str().unwrap().contains("Usage"));
+    }
+
+    #[actix_web::test]
+    async fn handle_events_url_verification_returns_challenge() {
+        use actix_web::{test, web, App};
+        use crate::test_helpers::test_app_state;
+        let state = test_app_state().await;
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(state))
+                .route("/api/slack/events", web::post().to(handle_events))
+        ).await;
+        let req = test::TestRequest::post()
+            .uri("/api/slack/events")
+            .set_json(&serde_json::json!({
+                "type": "url_verification",
+                "challenge": "my-challenge-token"
+            }))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 200);
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body["challenge"], "my-challenge-token");
+    }
+
+    #[actix_web::test]
+    async fn handle_events_unknown_type_returns_200() {
+        use actix_web::{test, web, App};
+        use crate::test_helpers::test_app_state;
+        let state = test_app_state().await;
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(state))
+                .route("/api/slack/events", web::post().to(handle_events))
+        ).await;
+        let req = test::TestRequest::post()
+            .uri("/api/slack/events")
+            .set_json(&serde_json::json!({ "type": "other_event" }))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 200);
     }
 }

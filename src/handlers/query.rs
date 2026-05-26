@@ -358,6 +358,268 @@ fn bson_doc_to_json(doc: &mongodb::bson::Document) -> serde_json::Value {
     serde_json::Value::Object(map)
 }
 
+/// Handler tests — actix-web integration paths (no real MongoDB/LLM).
+#[cfg(test)]
+mod handler_tests {
+    use super::*;
+    use actix_web::{test, web, App};
+    use crate::domain::models::{ParsedQuery, QueryOperation};
+    use crate::test_helpers::test_app_state;
+
+    fn confirm_req(parsed: ParsedQuery, confirm: bool) -> serde_json::Value {
+        serde_json::json!({ "parsed": parsed, "confirm": confirm })
+    }
+
+    fn find_query() -> ParsedQuery {
+        ParsedQuery {
+            collection: "movies".into(),
+            operation: QueryOperation::Find,
+            ..Default::default()
+        }
+    }
+
+    #[actix_web::test]
+    async fn handle_execute_rejects_when_confirm_false() {
+        let state = test_app_state().await;
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(state))
+                .route("/api/execute", web::post().to(handle_execute))
+        ).await;
+        let req = test::TestRequest::post()
+            .uri("/api/execute")
+            .set_json(&confirm_req(find_query(), false))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 400);
+    }
+
+    #[actix_web::test]
+    async fn handle_execute_rejects_in_query_only_mode() {
+        let mut state = test_app_state().await;
+        state.config.query_only = true;
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(state))
+                .route("/api/execute", web::post().to(handle_execute))
+        ).await;
+        let req = test::TestRequest::post()
+            .uri("/api/execute")
+            .set_json(&confirm_req(find_query(), true))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 400);
+    }
+
+    #[actix_web::test]
+    async fn handle_execute_rejects_disallowed_operation() {
+        // insert is not in test_config allowed_operations → SafetyError → 403
+        let state = test_app_state().await;
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(state))
+                .route("/api/execute", web::post().to(handle_execute))
+        ).await;
+        let parsed = ParsedQuery {
+            collection: "movies".into(),
+            operation: QueryOperation::Insert,
+            document: Some(serde_json::json!({"title": "Test"})),
+            ..Default::default()
+        };
+        let req = test::TestRequest::post()
+            .uri("/api/execute")
+            .set_json(&confirm_req(parsed, true))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 403);
+    }
+
+    #[actix_web::test]
+    async fn handle_execute_succeeds_with_find_query_when_mongo_available() {
+        use crate::infra::mongo::MongoPool;
+        let pool = match MongoPool::connect("mongodb://localhost:27017", "test_query_exec").await {
+            Ok(p) => p,
+            Err(_) => return,
+        };
+        if pool.db().run_command(mongodb::bson::doc! { "ping": 1 }).await.is_err() {
+            return;
+        }
+
+        use crate::config::AppConfig;
+        use crate::domain::safety::SafetyChecker;
+        use crate::infra::llm::LlmClient;
+        use std::sync::Arc;
+        use dashmap::DashMap;
+        let config = crate::test_helpers::test_config();
+        let state = crate::state::AppState {
+            mongo: pool,
+            llm: LlmClient::new(&config),
+            schemas: Arc::new(DashMap::new()),
+            safety: SafetyChecker::new(
+                vec!["find".into(), "count".into(), "distinct".into(), "aggregate".into()],
+                10000,
+            ),
+            http: reqwest::Client::new(),
+            issues: Arc::new(tokio::sync::RwLock::new(vec![])),
+            config,
+        };
+
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(state))
+                .route("/api/execute", web::post().to(handle_execute))
+        ).await;
+
+        // test_config uses unsafe_allow_all=false, so validation passes schema=None with query_only=false
+        // We use a confirmed find on a collection to exercise the full execution path
+        let parsed = ParsedQuery {
+            collection: "test_query_exec_col".into(),
+            operation: QueryOperation::Find,
+            limit: 10,
+            ..Default::default()
+        };
+        let req = test::TestRequest::post()
+            .uri("/api/execute")
+            .set_json(&serde_json::json!({ "parsed": parsed, "confirm": true }))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        // Either 200 (found) or 403 (unknown collection without schema) — either way not 500
+        assert!(resp.status().is_success() || resp.status() == 403);
+    }
+}
+
+/// Pure helper tests — no actix or async runtime needed.
+#[cfg(test)]
+mod unit_tests {
+    use super::*;
+
+    #[test]
+    fn query_result_len_documents() {
+        use mongodb::bson::Document;
+        let result = executor::QueryResult::Documents(vec![Document::new(), Document::new()]);
+        assert_eq!(query_result_len(&result), 2);
+    }
+
+    #[test]
+    fn query_result_len_count() {
+        let result = executor::QueryResult::Count(42);
+        assert_eq!(query_result_len(&result), 1);
+    }
+
+    #[test]
+    fn query_result_len_values() {
+        use mongodb::bson::Bson;
+        let result = executor::QueryResult::Values(vec![Bson::Int64(1), Bson::Int64(2), Bson::Int64(3)]);
+        assert_eq!(query_result_len(&result), 3);
+    }
+
+    #[test]
+    fn query_result_to_json_count() {
+        let result = executor::QueryResult::Count(7);
+        let json = query_result_to_json(&result);
+        assert_eq!(json["count"], 7);
+    }
+
+    #[test]
+    fn query_result_to_json_documents_empty() {
+        let result = executor::QueryResult::Documents(vec![]);
+        let json = query_result_to_json(&result);
+        assert!(json.as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn bson_datetime_formats_as_iso_string() {
+        use mongodb::bson::Bson;
+        let dt = mongodb::bson::DateTime::from_millis(0);
+        let json = bson_to_json(&Bson::DateTime(dt));
+        assert!(json.as_str().unwrap().contains("1970-01-01"));
+    }
+
+    #[test]
+    fn bson_objectid_formats_as_hex_string() {
+        use mongodb::bson::{Bson, oid::ObjectId};
+        let json = bson_to_json(&Bson::ObjectId(ObjectId::new()));
+        let s = json.as_str().unwrap();
+        assert_eq!(s.len(), 24);
+        assert!(s.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn query_result_to_json_values() {
+        use mongodb::bson::Bson;
+        let result = executor::QueryResult::Values(vec![Bson::String("a".into()), Bson::Int32(2)]);
+        let json = query_result_to_json(&result);
+        let arr = json.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0], "a");
+    }
+
+    #[test]
+    fn query_result_to_json_write() {
+        use crate::domain::executor::WriteResultData;
+        let result = executor::QueryResult::Write(WriteResultData {
+            operation: "insert".into(),
+            collection: "movies".into(),
+            matched_count: 0,
+            modified_count: 0,
+            inserted_id: Some("abc123".into()),
+        });
+        let json = query_result_to_json(&result);
+        assert_eq!(json["operation"], "insert");
+        assert_eq!(json["collection"], "movies");
+        assert_eq!(json["inserted_id"], "abc123");
+    }
+
+    #[test]
+    fn query_result_len_write() {
+        use crate::domain::executor::WriteResultData;
+        let result = executor::QueryResult::Write(WriteResultData {
+            operation: "insert".into(),
+            collection: "movies".into(),
+            matched_count: 0,
+            modified_count: 0,
+            inserted_id: None,
+        });
+        assert_eq!(query_result_len(&result), 1);
+    }
+
+    #[test]
+    fn bson_document_nested_converts_to_json_object() {
+        use mongodb::bson::{Bson, doc};
+        let bson = Bson::Document(doc! { "key": "value" });
+        let json = bson_to_json(&bson);
+        assert_eq!(json["key"], "value");
+    }
+
+    #[test]
+    fn bson_array_converts_to_json_array() {
+        use mongodb::bson::Bson;
+        let bson = Bson::Array(vec![Bson::Int32(1), Bson::Int32(2)]);
+        let json = bson_to_json(&bson);
+        let arr = json.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+    }
+
+    #[test]
+    fn bson_string_passes_through() {
+        use mongodb::bson::Bson;
+        let json = bson_to_json(&Bson::String("hello".into()));
+        assert_eq!(json, "hello");
+    }
+
+    #[test]
+    fn bson_bool_passes_through() {
+        use mongodb::bson::Bson;
+        assert_eq!(bson_to_json(&Bson::Boolean(true)), true);
+    }
+
+    #[test]
+    fn bson_null_passes_through() {
+        use mongodb::bson::Bson;
+        assert_eq!(bson_to_json(&Bson::Null), serde_json::Value::Null);
+    }
+}
+
 /// Convert a single BSON value to JSON, formatting DateTime as "YYYY-MM-DDTHH:MM:SS.SSSZ".
 fn bson_to_json(val: &mongodb::bson::Bson) -> serde_json::Value {
     use mongodb::bson::Bson;

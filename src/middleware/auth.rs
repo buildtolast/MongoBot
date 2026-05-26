@@ -96,10 +96,7 @@ where
             .and_then(|v| v.to_str().ok())
             .map(|s| s.to_string());
 
-        let provided_token = auth_header
-            .as_deref()
-            .and_then(|h| h.strip_prefix("Bearer "))
-            .map(|t| t.to_string());
+        let provided_token = extract_bearer_token(auth_header.as_deref());
 
         match provided_token {
             Some(token) => {
@@ -133,6 +130,12 @@ where
     }
 }
 
+/// Extract the Bearer token value from an Authorization header string.
+/// Returns `None` if the header is missing or does not have the `Bearer ` prefix.
+pub(crate) fn extract_bearer_token(header: Option<&str>) -> Option<String> {
+    header?.strip_prefix("Bearer ").map(|t| t.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -149,5 +152,148 @@ mod tests {
         let a = b"test-token-123";
         let b = b"wrong-token-456";
         assert!(!bool::from(a.ct_eq(b)));
+    }
+
+    #[test]
+    fn extract_bearer_token_valid() {
+        assert_eq!(extract_bearer_token(Some("Bearer my-secret-token")), Some("my-secret-token".into()));
+    }
+
+    #[test]
+    fn extract_bearer_token_missing_header() {
+        assert_eq!(extract_bearer_token(None), None);
+    }
+
+    #[test]
+    fn extract_bearer_token_wrong_prefix() {
+        assert_eq!(extract_bearer_token(Some("Token my-secret-token")), None);
+        assert_eq!(extract_bearer_token(Some("Basic dXNlcjpwYXNz")), None);
+    }
+
+    #[test]
+    fn extract_bearer_token_empty_string() {
+        assert_eq!(extract_bearer_token(Some("")), None);
+    }
+
+    #[test]
+    fn extract_bearer_token_bearer_prefix_only() {
+        assert_eq!(extract_bearer_token(Some("Bearer ")), Some("".into()));
+    }
+
+    // ── actix-web middleware integration tests ───────────────────────────────
+
+    async fn dummy_handler() -> actix_web::HttpResponse {
+        actix_web::HttpResponse::Ok().json(serde_json::json!({ "ok": true }))
+    }
+
+    #[actix_web::test]
+    async fn middleware_allows_slack_path_without_token() {
+        use actix_web::{test, web, App};
+        use crate::test_helpers::test_app_state;
+        let mut state = test_app_state().await;
+        state.config.dashboard_token = Some("secret".into());
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(state))
+                .wrap(AuthMiddleware)
+                .route("/api/slack/commands", web::post().to(dummy_handler))
+        ).await;
+        let req = test::TestRequest::post().uri("/api/slack/commands").to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 200);
+    }
+
+    #[actix_web::test]
+    async fn middleware_allows_options_without_token() {
+        use actix_web::{test, web, App};
+        use crate::test_helpers::test_app_state;
+        let mut state = test_app_state().await;
+        state.config.dashboard_token = Some("secret".into());
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(state))
+                .wrap(AuthMiddleware)
+                // Register for all methods so OPTIONS request finds the route
+                .route("/api/query", web::route().to(dummy_handler))
+        ).await;
+        let req = test::TestRequest::default()
+            .method(actix_web::http::Method::OPTIONS)
+            .uri("/api/query")
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 200);
+    }
+
+    #[actix_web::test]
+    async fn middleware_allows_all_when_no_token_configured() {
+        use actix_web::{test, web, App};
+        use crate::test_helpers::test_app_state;
+        let state = test_app_state().await; // dashboard_token = None
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(state))
+                .wrap(AuthMiddleware)
+                .route("/api/health", web::get().to(dummy_handler))
+        ).await;
+        let req = test::TestRequest::get().uri("/api/health").to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 200);
+    }
+
+    #[actix_web::test]
+    async fn middleware_rejects_missing_auth_header() {
+        use actix_web::{test, web, App};
+        use crate::test_helpers::test_app_state;
+        let mut state = test_app_state().await;
+        state.config.dashboard_token = Some("secret".into());
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(state))
+                .wrap(AuthMiddleware)
+                .route("/api/health", web::get().to(dummy_handler))
+        ).await;
+        let req = test::TestRequest::get().uri("/api/health").to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 401);
+    }
+
+    #[actix_web::test]
+    async fn middleware_rejects_wrong_token() {
+        use actix_web::{test, web, App};
+        use crate::test_helpers::test_app_state;
+        let mut state = test_app_state().await;
+        state.config.dashboard_token = Some("correct-token".into());
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(state))
+                .wrap(AuthMiddleware)
+                .route("/api/health", web::get().to(dummy_handler))
+        ).await;
+        let req = test::TestRequest::get()
+            .uri("/api/health")
+            .insert_header(("Authorization", "Bearer wrong-token"))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 401);
+    }
+
+    #[actix_web::test]
+    async fn middleware_accepts_correct_token() {
+        use actix_web::{test, web, App};
+        use crate::test_helpers::test_app_state;
+        let mut state = test_app_state().await;
+        state.config.dashboard_token = Some("correct-token".into());
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(state))
+                .wrap(AuthMiddleware)
+                .route("/api/health", web::get().to(dummy_handler))
+        ).await;
+        let req = test::TestRequest::get()
+            .uri("/api/health")
+            .insert_header(("Authorization", "Bearer correct-token"))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 200);
     }
 }

@@ -85,14 +85,12 @@ function renderResults(response) {
     emptyState.style.display = 'none';
     section.hidden = false;
 
-    // Handle feedback row visibility
+    // Always show feedback after every query response
     var feedbackRow = document.getElementById('feedback-row');
     var noteContainer = document.getElementById('feedback-note-container');
-    if (response.requires_confirmation === false) {
+    if (feedbackRow) {
         feedbackRow.hidden = false;
         if (noteContainer) noteContainer.hidden = true;
-    } else {
-        feedbackRow.hidden = true;
     }
 
     // Update stats
@@ -210,6 +208,11 @@ function renderTable(documents) {
     var thead = document.getElementById('results-thead');
     var tbody = document.getElementById('results-tbody');
 
+    // Store for re-use by sort/pagination handlers
+    if (documents && documents.length > 0) {
+        AppState.lastDocs = documents;
+    }
+
     if (!documents || documents.length === 0) {
         thead.innerHTML = '';
         tbody.innerHTML = '<tr><td style="padding:20px;color:var(--text-muted);text-align:center;">No documents</td></tr>';
@@ -267,7 +270,7 @@ function renderTable(documents) {
                 AppState.sortColumn = col;
                 AppState.sortDirection = 'asc';
             }
-            renderTable(AppState.lastResults.results);
+            renderTable(AppState.lastDocs);
         });
         headerRow.appendChild(th);
     });
@@ -394,6 +397,77 @@ function renderWriteResult(response) {
     tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:20px;"><div style="font-size:1.2rem;font-weight:600;">Write Operation Successful</div></td></tr>';
 }
 
+function ensureIndexTooltip() {
+    var tip = document.getElementById('schema-idx-tooltip');
+    if (!tip) {
+        tip = document.createElement('div');
+        tip.id = 'schema-idx-tooltip';
+        document.body.appendChild(tip);
+    }
+    return tip;
+}
+
+function showIndexTooltip(badge, html) {
+    var tip = ensureIndexTooltip();
+    tip.innerHTML = html;
+    tip.classList.add('visible');
+
+    var rect = badge.getBoundingClientRect();
+    var tipW = 300;
+    var left = rect.right + 6;
+    if (left + tipW > window.innerWidth) {
+        left = rect.left - tipW - 6;
+    }
+    tip.style.left = Math.max(4, left) + 'px';
+    tip.style.top = Math.max(4, rect.top) + 'px';
+}
+
+function hideIndexTooltip() {
+    var tip = document.getElementById('schema-idx-tooltip');
+    if (tip) tip.classList.remove('visible');
+}
+
+function buildGreenTooltip(indexes) {
+    var nonDefault = indexes.filter(function(idx) { return idx.name !== '_id_'; });
+    var html = '<div class="tip-title green">Existing indexes (' + indexes.length + ')</div>';
+    indexes.forEach(function(idx) {
+        html += '<div class="tip-index">';
+        html += '<span class="tip-name">' + escHtml(idx.name) + '</span>';
+        if (idx.keys && idx.keys.length) {
+            var keyStr = idx.keys.map(function(k) {
+                return k.field + ': ' + (k.direction === 1 ? 'asc' : k.direction === -1 ? 'desc' : k.direction);
+            }).join(', ');
+            html += '\n<span class="tip-keys">{ ' + escHtml(keyStr) + ' }</span>';
+        }
+        if (idx.unique) {
+            html += '\n<span class="tip-unique">UNIQUE</span>';
+        }
+        html += '</div>';
+    });
+    return html;
+}
+
+function buildRedTooltip(missingIssues) {
+    var html = '<div class="tip-title red">Missing indexes (' + missingIssues.length + ')</div>';
+    missingIssues.forEach(function(issue) {
+        html += '<div class="tip-index">';
+        html += '<span class="tip-name">' + escHtml(issue.field) + '</span>';
+        if (issue.fix_command) {
+            html += '\n<span class="tip-cmd">' + escHtml(issue.fix_command) + '</span>';
+        }
+        html += '</div>';
+    });
+    return html;
+}
+
+function escHtml(str) {
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
 function renderSchemas(schemas) {
     var container = document.getElementById('schema-list');
     container.innerHTML = '';
@@ -403,7 +477,17 @@ function renderSchemas(schemas) {
         return;
     }
 
+    // Build per-collection missing index map from AppState.issues
+    var missingByCollection = {};
+    (AppState.issues || []).forEach(function(issue) {
+        if (!missingByCollection[issue.collection]) {
+            missingByCollection[issue.collection] = [];
+        }
+        missingByCollection[issue.collection].push(issue);
+    });
+
     schemas.forEach(function(schema) {
+        var collName = schema.name || schema.collection;
         var card = document.createElement('div');
         card.className = 'collection-card';
 
@@ -412,13 +496,43 @@ function renderSchemas(schemas) {
 
         var nameSpan = document.createElement('span');
         nameSpan.className = 'collection-name';
-        nameSpan.textContent = schema.name || schema.collection;
+        nameSpan.textContent = collName;
+
+        // Index badges
+        var badgeGroup = document.createElement('div');
+        badgeGroup.className = 'idx-badges';
+
+        var existingIndexes = schema.indexes || [];
+        var missingIssues = missingByCollection[collName] || [];
+
+        // Green badge \u2014 existing indexes
+        if (existingIndexes.length > 0) {
+            var greenBadge = document.createElement('span');
+            greenBadge.className = 'idx-badge idx-badge-green';
+            greenBadge.textContent = existingIndexes.length;
+            var greenHtml = buildGreenTooltip(existingIndexes);
+            greenBadge.addEventListener('mouseenter', function() {
+                showIndexTooltip(greenBadge, greenHtml);
+            });
+            greenBadge.addEventListener('mouseleave', hideIndexTooltip);
+            badgeGroup.appendChild(greenBadge);
+        }
+
+        // Red badge \u2014 missing indexes
+        if (missingIssues.length > 0) {
+            var redBadge = document.createElement('span');
+            redBadge.className = 'idx-badge idx-badge-red';
+            redBadge.textContent = missingIssues.length;
+            var redHtml = buildRedTooltip(missingIssues);
+            redBadge.addEventListener('mouseenter', function() {
+                showIndexTooltip(redBadge, redHtml);
+            });
+            redBadge.addEventListener('mouseleave', hideIndexTooltip);
+            badgeGroup.appendChild(redBadge);
+        }
 
         var countSpan = document.createElement('span');
         countSpan.className = 'collection-count';
-        // API returns `description` (e.g. "80047 documents" for auto-introspected,
-        // or human text like "E-commerce order records" for YAML-described).
-        // Fall back to legacy `count` field if a future API exposes it.
         if (schema.description) {
             countSpan.textContent = schema.description;
         } else if (schema.count != null) {
@@ -430,10 +544,13 @@ function renderSchemas(schemas) {
         expandSpan.textContent = '\u25B6';
 
         header.appendChild(nameSpan);
+        header.appendChild(badgeGroup);
         header.appendChild(countSpan);
         header.appendChild(expandSpan);
 
-        header.addEventListener('click', function() {
+        // Expand click \u2014 but not on the badge area
+        header.addEventListener('click', function(e) {
+            if (e.target.classList.contains('idx-badge')) return;
             card.classList.toggle('expanded');
         });
 
@@ -463,6 +580,102 @@ function renderSchemas(schemas) {
         card.appendChild(header);
         card.appendChild(fields);
         container.appendChild(card);
+    });
+}
+
+function renderIssues(issues) {
+    var list = document.getElementById('issues-list');
+    var badge = document.getElementById('issues-count');
+    if (!list) return;
+
+    if (!issues || issues.length === 0) {
+        list.innerHTML = '<div class="issues-empty">No issues detected</div>';
+        if (badge) badge.hidden = true;
+        return;
+    }
+
+    // Group by collection
+    var byCollection = {};
+    issues.forEach(function(issue) {
+        if (!byCollection[issue.collection]) {
+            byCollection[issue.collection] = [];
+        }
+        byCollection[issue.collection].push(issue);
+    });
+
+    // Update badge
+    if (badge) {
+        badge.textContent = issues.length;
+        badge.hidden = false;
+    }
+
+    list.innerHTML = '';
+    Object.keys(byCollection).sort().forEach(function(collection) {
+        var fields = byCollection[collection];
+        var card = document.createElement('div');
+        card.className = 'issue-card';
+
+        var header = document.createElement('div');
+        header.className = 'issue-card-header';
+        header.innerHTML =
+            '<span class="issue-collection">' + collection + '</span>' +
+            '<span class="issue-field-count">' + fields.length + ' field' + (fields.length !== 1 ? 's' : '') + '</span>' +
+            '<span class="issue-expand">&#9656;</span>';
+        header.addEventListener('click', function() {
+            card.classList.toggle('expanded');
+        });
+
+        var fieldList = document.createElement('div');
+        fieldList.className = 'issue-fields';
+
+        fields.forEach(function(issue) {
+            var row = document.createElement('div');
+            row.className = 'issue-row';
+            row.dataset.collection = issue.collection;
+            row.dataset.field = issue.field;
+
+            var nameEl = document.createElement('span');
+            nameEl.className = 'issue-field-name';
+            nameEl.textContent = issue.field;
+            nameEl.title = issue.message || '';
+
+            var btn = document.createElement('button');
+            btn.className = 'issue-fix-btn';
+            btn.textContent = 'Create Index';
+            btn.addEventListener('click', function() {
+                btn.disabled = true;
+                btn.classList.add('fixing');
+                btn.textContent = 'Creating...';
+                fixIndex(issue.collection, issue.field).then(function() {
+                    btn.classList.remove('fixing');
+                    btn.classList.add('fixed');
+                    btn.textContent = 'Created';
+                    // Remove from local issues and re-render after a brief pause
+                    setTimeout(function() {
+                        fetchIssues().then(function(updated) {
+                            AppState.issues = updated || [];
+                            renderIssues(updated);
+                            if (AppState.schemas && AppState.schemas.length > 0) {
+                                renderSchemas(AppState.schemas);
+                            }
+                        });
+                    }, 800);
+                }).catch(function(err) {
+                    btn.disabled = false;
+                    btn.classList.remove('fixing');
+                    btn.textContent = 'Create Index';
+                    showToast('Failed to create index: ' + err.message, 'error');
+                });
+            });
+
+            row.appendChild(nameEl);
+            row.appendChild(btn);
+            fieldList.appendChild(row);
+        });
+
+        card.appendChild(header);
+        card.appendChild(fieldList);
+        list.appendChild(card);
     });
 }
 
@@ -512,7 +725,7 @@ function renderPagination(total, page, pageSize) {
     prevBtn.disabled = page <= 1;
     prevBtn.addEventListener('click', function() {
         AppState.currentPage = Math.max(1, page - 1);
-        renderTable(AppState.lastResults.results);
+        renderTable(AppState.lastDocs);
     });
     container.appendChild(prevBtn);
 
@@ -552,7 +765,7 @@ function renderPagination(total, page, pageSize) {
     nextBtn.disabled = page >= totalPages;
     nextBtn.addEventListener('click', function() {
         AppState.currentPage = Math.min(totalPages, page + 1);
-        renderTable(AppState.lastResults.results);
+        renderTable(AppState.lastDocs);
     });
     container.appendChild(nextBtn);
 }
@@ -563,7 +776,7 @@ function createPageBtn(num, currentPage) {
     if (num === currentPage) btn.className = 'active';
     btn.addEventListener('click', function() {
         AppState.currentPage = num;
-        renderTable(AppState.lastResults.results);
+        renderTable(AppState.lastDocs);
     });
     return btn;
 }

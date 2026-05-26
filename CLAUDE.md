@@ -3,7 +3,7 @@
 > **Active roadmap:** see [`NextSteps.md`](NextSteps.md) for the approved v0.5.0 / v0.5.1 / v0.5.2 plan — feedback capture, in-context few-shot learning, and LoRA fine-tuning pipeline.
 
 ## Project Overview
-NL-to-MongoDB query bot with Web UI and Slack integration. Actix-web backend with embedded vanilla JS/HTML frontend. 5 LLM providers: Ollama (default), LM Studio, llama.cpp, Anthropic Claude, OpenAI GPT — switchable at runtime from the UI. NL parsing via direct HTTP calls (reqwest). Single binary deployment. Default database: `movies` (14+ collections auto-discovered via runtime introspection). Full aggregate pipeline support ($group, $lookup, $unwind, $bucket, $facet). Raw pipeline/filter passthrough for native MongoDB queries. 124 unit tests, 22 source files, 17 frontend files.
+NL-to-MongoDB query bot with Web UI and Slack integration. Actix-web backend with embedded vanilla JS/HTML frontend. 5 LLM providers: Ollama (default), LM Studio, llama.cpp, Anthropic Claude, OpenAI GPT — switchable at runtime from the UI. NL parsing via direct HTTP calls (reqwest). Single binary deployment. Default database: `movies` (14+ collections auto-discovered via runtime introspection). Full aggregate pipeline support ($group, $lookup, $unwind, $bucket, $facet). Raw pipeline/filter passthrough for native MongoDB queries. 31 source files, 19 frontend files.
 
 ## Build & Run
 ```bash

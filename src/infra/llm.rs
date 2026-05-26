@@ -1023,4 +1023,343 @@ mod tests {
         assert!(prompt.contains(query));
         assert!(prompt.contains(schema));
     }
+
+    #[test]
+    fn strip_markdown_fences_plain_backticks() {
+        let input = "```\n{\"collection\":\"test\"}\n```";
+        assert_eq!(strip_markdown_fences(input), "{\"collection\":\"test\"}");
+    }
+
+    #[test]
+    fn strip_markdown_fences_no_closing() {
+        // Missing closing ``` — should still return the inner content trimmed
+        let input = "```json\n{\"collection\":\"test\"}";
+        assert_eq!(strip_markdown_fences(input), "{\"collection\":\"test\"}");
+    }
+
+    #[test]
+    fn parse_llm_response_delete_operation() {
+        let json = r#"{"collection":"movies","operation":"delete","filters":[{"field":"year","operator":"lt","value":1900}],"limit":100}"#;
+        let parsed = parse_llm_response(json).unwrap();
+        assert_eq!(parsed.operation, crate::domain::models::QueryOperation::Delete);
+    }
+
+    #[test]
+    fn parse_llm_response_update_operation_with_update_many() {
+        let json = r#"{"collection":"movies","operation":"update","filters":[],"update_fields":{"status":"archived"},"update_many":true,"limit":100}"#;
+        let parsed = parse_llm_response(json).unwrap();
+        assert_eq!(parsed.operation, crate::domain::models::QueryOperation::Update);
+        assert!(parsed.update_many);
+        assert!(parsed.update_fields.is_some());
+    }
+
+    #[test]
+    fn parse_llm_response_insert_with_document() {
+        let json = r#"{"collection":"movies","operation":"insert","filters":[],"document":{"title":"Test","year":2024},"limit":100}"#;
+        let parsed = parse_llm_response(json).unwrap();
+        assert_eq!(parsed.operation, crate::domain::models::QueryOperation::Insert);
+        assert!(parsed.document.is_some());
+    }
+
+    #[test]
+    fn parse_llm_response_count_operation() {
+        let json = r#"{"collection":"actors","operation":"count","filters":[],"limit":100}"#;
+        let parsed = parse_llm_response(json).unwrap();
+        assert_eq!(parsed.operation, crate::domain::models::QueryOperation::Count);
+    }
+
+    #[test]
+    fn parse_llm_response_with_unwind_and_bucket() {
+        let json = r#"{
+            "collection":"orders",
+            "operation":"aggregate",
+            "filters":[],
+            "limit":100,
+            "unwind":"$items",
+            "bucket":{"group_by":"price","boundaries":[0,10,50,100]}
+        }"#;
+        let parsed = parse_llm_response(json).unwrap();
+        assert_eq!(parsed.unwind.as_deref(), Some("$items"));
+        assert!(parsed.bucket.is_some());
+    }
+
+    #[test]
+    fn parse_llm_response_with_sort() {
+        let json = r#"{"collection":"movies","operation":"find","filters":[],"limit":10,"sort":{"field":"year","order":-1}}"#;
+        let parsed = parse_llm_response(json).unwrap();
+        let sort = parsed.sort.unwrap();
+        assert_eq!(sort.field, "year");
+        assert_eq!(sort.order, -1);
+    }
+
+    #[test]
+    fn parse_llm_response_missing_collection_returns_error() {
+        let json = r#"{"operation":"find","filters":[],"limit":100}"#;
+        assert!(parse_llm_response(json).is_err());
+    }
+
+    #[test]
+    fn parse_llm_response_invalid_json_returns_error() {
+        assert!(parse_llm_response("not json at all").is_err());
+    }
+
+    #[test]
+    fn parse_filters_flexible_alternative_format() {
+        // Single-key object format: {"year": {"$gt": 2000}}
+        let val = serde_json::json!([{"year": {"$gt": 2000}}]);
+        let filters = parse_filters_flexible(Some(&val));
+        assert_eq!(filters.len(), 1);
+        assert_eq!(filters[0].field, "year");
+        assert_eq!(filters[0].operator, crate::domain::models::FilterOperator::Gt);
+    }
+
+    #[test]
+    fn parse_filters_flexible_simple_eq_format() {
+        // Single-key object format: {"status": "active"}
+        let val = serde_json::json!([{"status": "active"}]);
+        let filters = parse_filters_flexible(Some(&val));
+        assert_eq!(filters.len(), 1);
+        assert_eq!(filters[0].field, "status");
+        assert_eq!(filters[0].operator, crate::domain::models::FilterOperator::Eq);
+    }
+
+    #[test]
+    fn parse_filters_flexible_skips_dollar_prefix_keys() {
+        // Keys starting with $ at top level are skipped
+        let val = serde_json::json!([{"$or": []}]);
+        let filters = parse_filters_flexible(Some(&val));
+        assert!(filters.is_empty());
+    }
+
+    #[test]
+    fn parse_filters_flexible_none_returns_empty() {
+        let filters = parse_filters_flexible(None);
+        assert!(filters.is_empty());
+    }
+
+    #[test]
+    fn resolve_model_ollama_no_override() {
+        let config = crate::test_helpers::test_config();
+        let client = LlmClient::new(&config);
+        let model = client.resolve_model(None, None);
+        assert_eq!(model, config.ollama_model);
+    }
+
+    #[test]
+    fn resolve_model_ollama_with_override() {
+        let config = crate::test_helpers::test_config();
+        let client = LlmClient::new(&config);
+        let model = client.resolve_model(Some("custom-model"), None);
+        assert_eq!(model, "custom-model");
+    }
+
+    #[test]
+    fn resolve_model_lmstudio_falls_back_to_configured() {
+        let mut config = crate::test_helpers::test_config();
+        config.lmstudio_model = Some("lmstudio-model".into());
+        let client = LlmClient::new(&config);
+        let model = client.resolve_model(None, Some(crate::config::LlmProvider::LmStudio));
+        assert_eq!(model, "lmstudio-model");
+    }
+
+    #[test]
+    fn resolve_model_lmstudio_override_wins() {
+        let config = crate::test_helpers::test_config();
+        let client = LlmClient::new(&config);
+        let model = client.resolve_model(Some("my-override"), Some(crate::config::LlmProvider::LmStudio));
+        assert_eq!(model, "my-override");
+    }
+
+    #[test]
+    fn resolve_model_llamacpp_falls_back_to_configured() {
+        let mut config = crate::test_helpers::test_config();
+        config.llamacpp_model = Some("llamacpp-model".into());
+        let client = LlmClient::new(&config);
+        let model = client.resolve_model(None, Some(crate::config::LlmProvider::LlamaCpp));
+        assert_eq!(model, "llamacpp-model");
+    }
+
+    #[test]
+    fn parse_filter_operator_unknown_maps_to_eq() {
+        // Unknown operators default to Eq
+        let op = parse_filter_operator("unknown_operator");
+        assert_eq!(op, crate::domain::models::FilterOperator::Eq);
+    }
+
+    #[test]
+    fn parse_filter_operator_all_known_variants() {
+        use crate::domain::models::FilterOperator::*;
+        assert_eq!(parse_filter_operator("eq"), Eq);
+        assert_eq!(parse_filter_operator("ne"), Ne);
+        assert_eq!(parse_filter_operator("$ne"), Ne);
+        assert_eq!(parse_filter_operator("gt"), Gt);
+        assert_eq!(parse_filter_operator("gte"), Gte);
+        assert_eq!(parse_filter_operator("lt"), Lt);
+        assert_eq!(parse_filter_operator("lte"), Lte);
+        assert_eq!(parse_filter_operator("in"), In);
+        assert_eq!(parse_filter_operator("nin"), Nin);
+        assert_eq!(parse_filter_operator("contains"), Contains);
+        assert_eq!(parse_filter_operator("regex"), Regex);
+        assert_eq!(parse_filter_operator("exists"), Exists);
+        assert_eq!(parse_filter_operator("all"), All);
+        assert_eq!(parse_filter_operator("size"), Size);
+        assert_eq!(parse_filter_operator("type"), Type);
+    }
+
+    // ── LlmClient::new() for non-Ollama providers ─────────────
+    // Test via resolve_model() which exercises the constructor's model selection
+    // (fields are private; behavior is the observable surface).
+
+    #[test]
+    fn new_lmstudio_with_model_uses_lmstudio_model() {
+        let mut config = crate::test_helpers::test_config();
+        config.llm_provider = crate::config::LlmProvider::LmStudio;
+        config.lmstudio_model = Some("my-lmstudio-model".into());
+        let client = LlmClient::new(&config);
+        // resolve_model with LmStudio and no override falls back to the lmstudio_model stored
+        let model = client.resolve_model(None, Some(crate::config::LlmProvider::LmStudio));
+        assert_eq!(model, "my-lmstudio-model");
+    }
+
+    #[test]
+    fn new_lmstudio_without_model_falls_back_to_cloud_model() {
+        let mut config = crate::test_helpers::test_config();
+        config.llm_provider = crate::config::LlmProvider::LmStudio;
+        config.lmstudio_model = None;
+        config.cloud_llm_model = Some("cloud-fallback".into());
+        let client = LlmClient::new(&config);
+        // lmstudio_model is None → falls back to self.model which was set from cloud_llm_model
+        let model = client.resolve_model(None, None);
+        assert_eq!(model, "cloud-fallback");
+    }
+
+    #[test]
+    fn new_lmstudio_no_model_at_all_defaults_to_default() {
+        let mut config = crate::test_helpers::test_config();
+        config.llm_provider = crate::config::LlmProvider::LmStudio;
+        config.lmstudio_model = None;
+        config.cloud_llm_model = None;
+        let client = LlmClient::new(&config);
+        let model = client.resolve_model(None, None);
+        assert_eq!(model, "default");
+    }
+
+    #[test]
+    fn new_llamacpp_with_model_uses_llamacpp_model() {
+        let mut config = crate::test_helpers::test_config();
+        config.llm_provider = crate::config::LlmProvider::LlamaCpp;
+        config.llamacpp_model = Some("gguf-model".into());
+        let client = LlmClient::new(&config);
+        let model = client.resolve_model(None, Some(crate::config::LlmProvider::LlamaCpp));
+        assert_eq!(model, "gguf-model");
+    }
+
+    #[test]
+    fn new_llamacpp_without_model_defaults_to_default() {
+        let mut config = crate::test_helpers::test_config();
+        config.llm_provider = crate::config::LlmProvider::LlamaCpp;
+        config.llamacpp_model = None;
+        let client = LlmClient::new(&config);
+        let model = client.resolve_model(None, None);
+        assert_eq!(model, "default");
+    }
+
+    #[test]
+    fn new_anthropic_uses_cloud_model() {
+        let mut config = crate::test_helpers::test_config();
+        config.llm_provider = crate::config::LlmProvider::Anthropic;
+        config.cloud_llm_model = Some("claude-sonnet-4-6".into());
+        let client = LlmClient::new(&config);
+        let model = client.resolve_model(None, None);
+        assert_eq!(model, "claude-sonnet-4-6");
+    }
+
+    #[test]
+    fn new_openai_uses_cloud_model() {
+        let mut config = crate::test_helpers::test_config();
+        config.llm_provider = crate::config::LlmProvider::OpenAI;
+        config.cloud_llm_model = Some("gpt-4o".into());
+        let client = LlmClient::new(&config);
+        let model = client.resolve_model(None, None);
+        assert_eq!(model, "gpt-4o");
+    }
+
+    #[tokio::test]
+    async fn list_models_for_provider_anthropic_returns_hardcoded_list() {
+        let config = crate::test_helpers::test_config();
+        let client = LlmClient::new(&config);
+        let models = client.list_models_for_provider(crate::config::LlmProvider::Anthropic).await.unwrap();
+        assert_eq!(models.len(), 3);
+        assert!(models.iter().any(|m| m.contains("claude")));
+    }
+
+    #[test]
+    fn parse_llm_response_key_field_for_distinct_projection() {
+        // Some LLMs return {"key": "fieldname"} for distinct
+        let json = r#"{"collection":"movies","operation":"distinct","key":"language","filters":[]}"#;
+        let parsed = parse_llm_response(json).unwrap();
+        assert_eq!(parsed.operation, crate::domain::models::QueryOperation::Distinct);
+        assert_eq!(parsed.projection, vec!["language".to_string()]);
+    }
+
+    #[test]
+    fn parse_llm_response_delete_many_true() {
+        let json = r#"{"collection":"logs","operation":"delete","filters":[{"field":"age","operator":"gt","value":90}],"delete_many":true,"limit":100}"#;
+        let parsed = parse_llm_response(json).unwrap();
+        assert!(parsed.delete_many);
+    }
+
+    #[test]
+    fn parse_llm_response_with_facet_field() {
+        let json = r#"{"collection":"products","operation":"aggregate","filters":[],"limit":100,"facet":{"byCategory":[],"byPrice":[]}}"#;
+        let parsed = parse_llm_response(json).unwrap();
+        assert!(parsed.facet.is_some());
+    }
+
+    #[test]
+    fn parse_filters_flexible_plain_object_format() {
+        // Plain object: {"genre": "Sci-Fi", "rating": {"$gt": 8}}
+        let val = serde_json::json!({"genre": "Sci-Fi", "rating": {"$gt": 8}});
+        let filters = parse_filters_flexible(Some(&val));
+        assert_eq!(filters.len(), 2);
+        let genre = filters.iter().find(|f| f.field == "genre").unwrap();
+        assert_eq!(genre.operator, crate::domain::models::FilterOperator::Eq);
+        let rating = filters.iter().find(|f| f.field == "rating").unwrap();
+        assert_eq!(rating.operator, crate::domain::models::FilterOperator::Gt);
+    }
+
+    #[test]
+    fn parse_filters_flexible_plain_object_skips_dollar_keys() {
+        let val = serde_json::json!({"$or": [], "title": "Inception"});
+        let filters = parse_filters_flexible(Some(&val));
+        assert_eq!(filters.len(), 1);
+        assert_eq!(filters[0].field, "title");
+    }
+
+    #[test]
+    fn parse_filters_flexible_non_array_non_object_returns_empty() {
+        let val = serde_json::json!("not an array or object");
+        let filters = parse_filters_flexible(Some(&val));
+        assert!(filters.is_empty());
+    }
+
+    #[test]
+    fn resolve_model_anthropic_with_override() {
+        let mut config = crate::test_helpers::test_config();
+        config.llm_provider = crate::config::LlmProvider::Anthropic;
+        config.cloud_llm_model = Some("claude-default".into());
+        let client = LlmClient::new(&config);
+        let model = client.resolve_model(Some("claude-opus-4"), Some(crate::config::LlmProvider::Anthropic));
+        assert_eq!(model, "claude-opus-4");
+    }
+
+    #[test]
+    fn resolve_model_anthropic_no_override_uses_model_field() {
+        let mut config = crate::test_helpers::test_config();
+        config.llm_provider = crate::config::LlmProvider::Anthropic;
+        config.cloud_llm_model = Some("claude-default".into());
+        let client = LlmClient::new(&config);
+        let model = client.resolve_model(None, Some(crate::config::LlmProvider::Anthropic));
+        assert_eq!(model, "claude-default");
+    }
 }

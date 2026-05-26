@@ -7,6 +7,7 @@ var currentAbortController = null;
 var AppState = {
     currentQuery: '',
     lastResults: null,
+    lastDocs: null,
     currentProvider: 'ollama',
     currentModel: 'qwen3-coder:30b',
     lastSchemaSnapshot: '',
@@ -14,6 +15,7 @@ var AppState = {
     currentPage: 1,
     pageSize: 25,
     schemas: [],
+    issues: [],
     wsConnected: false,
     mongoConnected: false,
     ollamaConnected: false,

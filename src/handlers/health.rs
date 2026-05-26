@@ -87,6 +87,239 @@ fn default_model_for_provider(config: &AppConfig, provider: LlmProvider) -> Stri
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_config() -> AppConfig {
+        AppConfig {
+            slack_bot_token: None,
+            slack_signing_secret: None,
+            mongo_uri: "mongodb://localhost:27017".into(),
+            mongo_db_name: "test".into(),
+            llm_provider: LlmProvider::Ollama,
+            ollama_url: "http://localhost:11434".into(),
+            ollama_model: "my-ollama-model".into(),
+            lmstudio_url: "http://localhost:1234".into(),
+            lmstudio_model: Some("my-lmstudio-model".into()),
+            llamacpp_url: "http://localhost:8080".into(),
+            llamacpp_model: Some("my-llamacpp-model".into()),
+            cloud_llm_api_key: None,
+            cloud_llm_model: Some("my-cloud-model".into()),
+            anthropic_api_url: "https://api.anthropic.com".into(),
+            openai_api_url: "https://api.openai.com".into(),
+            max_result_rows: 10000,
+            allowed_operations: vec!["find".into()],
+            host: "0.0.0.0".into(),
+            port: 3000,
+            dashboard_token: None,
+            unsafe_allow_all_operations: false,
+            query_only: false,
+            embedding_model: "nomic-embed-text".into(),
+            embedding_url: None,
+            feedback_top_k: 5,
+            enable_feedback_retrieval: true,
+            auto_create_indexes: false,
+        }
+    }
+
+    #[test]
+    fn default_model_ollama() {
+        let config = test_config();
+        assert_eq!(default_model_for_provider(&config, LlmProvider::Ollama), "my-ollama-model");
+    }
+
+    #[test]
+    fn default_model_lmstudio() {
+        let config = test_config();
+        assert_eq!(default_model_for_provider(&config, LlmProvider::LmStudio), "my-lmstudio-model");
+    }
+
+    #[test]
+    fn default_model_llamacpp() {
+        let config = test_config();
+        assert_eq!(default_model_for_provider(&config, LlmProvider::LlamaCpp), "my-llamacpp-model");
+    }
+
+    #[test]
+    fn default_model_anthropic() {
+        let config = test_config();
+        assert_eq!(default_model_for_provider(&config, LlmProvider::Anthropic), "my-cloud-model");
+    }
+
+    #[test]
+    fn default_model_openai() {
+        let config = test_config();
+        assert_eq!(default_model_for_provider(&config, LlmProvider::OpenAI), "my-cloud-model");
+    }
+
+    #[test]
+    fn default_model_lmstudio_none_returns_empty() {
+        let mut config = test_config();
+        config.lmstudio_model = None;
+        assert_eq!(default_model_for_provider(&config, LlmProvider::LmStudio), "");
+    }
+
+    #[test]
+    fn default_model_cloud_none_returns_empty() {
+        let mut config = test_config();
+        config.cloud_llm_model = None;
+        assert_eq!(default_model_for_provider(&config, LlmProvider::Anthropic), "");
+        assert_eq!(default_model_for_provider(&config, LlmProvider::OpenAI), "");
+    }
+
+    // ── actix-web handler tests ──────────────────────────────────
+
+    #[actix_web::test]
+    async fn version_returns_json_with_expected_keys() {
+        use actix_web::{test, web, App};
+        let app = test::init_service(
+            App::new().route("/api/version", web::get().to(version))
+        ).await;
+        let req = test::TestRequest::get().uri("/api/version").to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 200);
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert!(body.get("version").is_some());
+        assert!(body.get("git_hash").is_some());
+        assert!(body.get("built_at").is_some());
+    }
+
+    #[actix_web::test]
+    async fn list_providers_returns_all_five() {
+        use actix_web::{test, web, App};
+        use crate::test_helpers::test_app_state;
+        let state = test_app_state().await;
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(state))
+                .route("/api/providers", web::get().to(list_providers))
+        ).await;
+        let req = test::TestRequest::get().uri("/api/providers").to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 200);
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        let providers = body.as_array().unwrap();
+        assert_eq!(providers.len(), 5);
+        let names: Vec<&str> = providers.iter()
+            .map(|p| p["name"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(&"ollama"));
+        assert!(names.contains(&"anthropic"));
+        assert!(names.contains(&"openai"));
+    }
+
+    #[actix_web::test]
+    async fn list_providers_marks_configured_provider_as_default() {
+        use actix_web::{test, web, App};
+        use crate::test_helpers::test_app_state;
+        let state = test_app_state().await;
+        // test_config uses Ollama
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(state))
+                .route("/api/providers", web::get().to(list_providers))
+        ).await;
+        let req = test::TestRequest::get().uri("/api/providers").to_request();
+        let resp = test::call_service(&app, req).await;
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        let providers = body.as_array().unwrap();
+        let ollama = providers.iter().find(|p| p["name"] == "ollama").unwrap();
+        assert_eq!(ollama["default"], true);
+        let non_default_count = providers.iter().filter(|p| p["default"] == true).count();
+        assert_eq!(non_default_count, 1);
+    }
+
+    #[actix_web::test]
+    async fn get_config_returns_grouped_sections() {
+        use actix_web::{test, web, App};
+        use crate::test_helpers::test_app_state;
+        let state = test_app_state().await;
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(state))
+                .route("/api/config", web::get().to(get_config))
+        ).await;
+        let req = test::TestRequest::get().uri("/api/config").to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 200);
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        for section in &["llm", "mongodb", "server", "safety", "slack"] {
+            assert!(body.get(section).is_some(), "missing section: {section}");
+        }
+    }
+
+    #[actix_web::test]
+    async fn list_models_unknown_provider_returns_400() {
+        use actix_web::{test, web, App};
+        use crate::test_helpers::test_app_state;
+        let state = test_app_state().await;
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(state))
+                .route("/api/models", web::get().to(list_models))
+        ).await;
+        let req = test::TestRequest::get().uri("/api/models?provider=invalid_provider").to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 400);
+    }
+
+    #[actix_web::test]
+    async fn list_models_returns_empty_when_provider_unreachable() {
+        use actix_web::{test, web, App};
+        use crate::test_helpers::test_app_state;
+        let state = test_app_state().await;
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(state))
+                .route("/api/models", web::get().to(list_models))
+        ).await;
+        // Will fail to reach Ollama but should return empty array, not 500
+        let req = test::TestRequest::get().uri("/api/models?provider=ollama").to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 200);
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert!(body.is_array());
+    }
+
+    #[actix_web::test]
+    async fn get_config_redacts_secrets() {
+        use actix_web::{test, web, App};
+        use crate::test_helpers::test_config;
+        let mut config = test_config();
+        config.cloud_llm_api_key = Some("super-secret-key".into());
+        config.slack_bot_token = Some("xoxb-secret-token".into());
+        use std::sync::Arc;
+        use dashmap::DashMap;
+        use crate::domain::safety::SafetyChecker;
+        use crate::infra::llm::LlmClient;
+        use crate::infra::mongo::MongoPool;
+        use crate::state::AppState;
+        let allowed_ops = config.allowed_operations.clone();
+        let max_rows = config.max_result_rows;
+        let llm = LlmClient::new(&config);
+        let state = AppState {
+            mongo: MongoPool::new_for_tests().await,
+            llm,
+            schemas: Arc::new(DashMap::new()),
+            safety: SafetyChecker::new(allowed_ops, max_rows),
+            http: reqwest::Client::new(),
+            issues: Arc::new(tokio::sync::RwLock::new(vec![])),
+            config,
+        };
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(state))
+                .route("/api/config", web::get().to(get_config))
+        ).await;
+        let req = test::TestRequest::get().uri("/api/config").to_request();
+        let resp = test::call_service(&app, req).await;
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body["llm"]["cloud_llm_api_key"], "***set***");
+        assert_eq!(body["slack"]["bot_token"], "***set***");
+    }
+}
+
 /// Version endpoint — returns build metadata.
 pub async fn version() -> HttpResponse {
     HttpResponse::Ok().json(json!({

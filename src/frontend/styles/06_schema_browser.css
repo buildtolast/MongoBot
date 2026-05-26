@@ -209,6 +209,108 @@
     color: hsl(25 90% 65%);
 }
 
+/* ---- Index count badges on collection cards ---- */
+
+.idx-badges {
+    display: flex;
+    gap: 3px;
+    flex-shrink: 0;
+    align-items: center;
+}
+
+.idx-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    border-radius: var(--radius-full);
+    font-size: 10px;
+    font-weight: 700;
+    font-family: var(--font-mono);
+    cursor: default;
+    line-height: 1;
+    flex-shrink: 0;
+}
+
+.idx-badge-green {
+    background: var(--success-bg);
+    color: var(--success-color);
+    border: 1px solid hsl(142 71% 45% / 0.3);
+}
+
+.idx-badge-red {
+    background: var(--danger-bg);
+    color: var(--danger);
+    border: 1px solid hsl(0 72% 51% / 0.3);
+}
+
+/* Floating tooltip — appended to <body>, positioned via JS */
+#schema-idx-tooltip {
+    display: none;
+    position: fixed;
+    z-index: 9999;
+    background: var(--bg-card);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius);
+    padding: var(--space-2) var(--space-3);
+    font-size: 11px;
+    font-family: var(--font-mono);
+    color: var(--text-secondary);
+    max-width: 300px;
+    min-width: 160px;
+    box-shadow: var(--shadow);
+    pointer-events: none;
+    line-height: 1.6;
+    white-space: pre;
+}
+
+#schema-idx-tooltip.visible {
+    display: block;
+}
+
+#schema-idx-tooltip .tip-title {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 4px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+#schema-idx-tooltip .tip-title.green { color: var(--success-color); }
+#schema-idx-tooltip .tip-title.red   { color: var(--danger); }
+
+#schema-idx-tooltip .tip-index {
+    margin-bottom: 5px;
+}
+
+#schema-idx-tooltip .tip-index:last-child { margin-bottom: 0; }
+
+#schema-idx-tooltip .tip-name {
+    color: var(--text-primary);
+    font-weight: 600;
+}
+
+#schema-idx-tooltip .tip-keys {
+    color: var(--text-muted);
+    padding-left: 8px;
+}
+
+#schema-idx-tooltip .tip-unique {
+    color: var(--warning-color);
+    font-size: 10px;
+    padding-left: 8px;
+}
+
+#schema-idx-tooltip .tip-cmd {
+    color: var(--info-color);
+    padding-left: 8px;
+    font-size: 10px;
+}
+
 /* ---- Query History ---- */
 
 .history-item {

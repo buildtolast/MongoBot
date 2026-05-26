@@ -171,4 +171,56 @@ mod tests {
         assert_eq!(bson_to_string(&mongodb::bson::Bson::Int32(42)), "42");
         assert_eq!(bson_to_string(&mongodb::bson::Bson::Boolean(true)), "true");
     }
+
+    #[test]
+    fn bson_to_string_int64() {
+        assert_eq!(bson_to_string(&mongodb::bson::Bson::Int64(9999)), "9999");
+    }
+
+    #[test]
+    fn bson_to_string_double() {
+        assert_eq!(bson_to_string(&mongodb::bson::Bson::Double(3.14)), "3.14");
+    }
+
+    #[test]
+    fn bson_to_string_objectid() {
+        use mongodb::bson::oid::ObjectId;
+        let oid = ObjectId::new();
+        let s = bson_to_string(&mongodb::bson::Bson::ObjectId(oid));
+        assert_eq!(s.len(), 24);
+    }
+
+    #[test]
+    fn bson_to_string_datetime() {
+        let dt = mongodb::bson::DateTime::from_millis(0);
+        let s = bson_to_string(&mongodb::bson::Bson::DateTime(dt));
+        assert!(s.contains("1970"));
+    }
+
+    #[test]
+    fn csv_with_array_field_formats_inline() {
+        let docs = vec![doc! { "tags": ["a", "b", "c"] }];
+        let csv = documents_to_csv(&docs).unwrap();
+        assert!(csv.contains("tags"));
+        assert!(csv.contains("[a,b,c]"));
+    }
+
+    #[test]
+    fn csv_doc_with_multiple_docs_different_fields() {
+        // Multiple docs where second doc has an extra field not in first
+        let docs = vec![
+            doc! { "name": "Alice", "age": 30 },
+            doc! { "name": "Bob", "city": "NY" },
+        ];
+        let csv = documents_to_csv(&docs).unwrap();
+        assert!(csv.contains("name"));
+    }
+
+    #[test]
+    fn flatten_document_handles_array() {
+        let doc = doc! { "tags": ["x", "y"] };
+        let flat = flatten_document(&doc, "");
+        assert!(flat.contains_key("tags"));
+        assert!(flat["tags"].contains("x"));
+    }
 }

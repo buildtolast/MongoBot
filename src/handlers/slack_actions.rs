@@ -10,3 +10,22 @@ pub async fn handle_action(
     tracing::debug!("Received Slack action (acknowledged)");
     HttpResponse::Ok().finish()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use actix_web::{test, web, App};
+
+    #[actix_web::test]
+    async fn handle_action_returns_200() {
+        let app = test::init_service(
+            App::new().route("/api/slack/actions", web::post().to(handle_action))
+        ).await;
+        let req = test::TestRequest::post()
+            .uri("/api/slack/actions")
+            .set_json(&serde_json::json!({ "type": "block_actions", "actions": [] }))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 200);
+    }
+}

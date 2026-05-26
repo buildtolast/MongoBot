@@ -844,18 +844,201 @@ mod tests {
 
     #[test]
     fn test_unsafe_allows_unknown_collection() {
-        // With unsafe_allow_all, a non-internal unknown collection should be allowed through
         let checker = test_checker().with_unsafe_allow_all(true);
         let query = ParsedQuery {
             collection: "ad_hoc_collection".into(),
             operation: QueryOperation::Find,
             ..Default::default()
         };
-        // No schema provided, but unsafe_allow_all bypasses the unknown-collection rejection
         let result = checker.validate(&query, None);
-        assert!(
-            result.is_ok(),
-            "unsafe_allow_all should permit unknown non-internal collections"
-        );
+        assert!(result.is_ok(), "unsafe_allow_all should permit unknown non-internal collections");
+    }
+
+    // ── field_matches dotted-path ────────────────────────────────
+
+    #[test]
+    fn field_matches_exact_match() {
+        assert!(field_matches("title", &["title", "year"]));
+    }
+
+    #[test]
+    fn field_matches_dotted_parent_known() {
+        // "address.city" should match when "address" is a known field
+        assert!(field_matches("address.city", &["address", "name"]));
+    }
+
+    #[test]
+    fn field_matches_id_always_true() {
+        assert!(field_matches("_id", &[]));
+    }
+
+    #[test]
+    fn field_matches_unknown_returns_false() {
+        assert!(!field_matches("unknown_field", &["title", "year"]));
+    }
+
+    // ── validate_raw_pipeline edge cases ────────────────────────
+
+    #[test]
+    fn raw_pipeline_non_object_stage_returns_error() {
+        let stages = vec![serde_json::json!("not_an_object")];
+        let result = validate_raw_pipeline(&stages, false);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn raw_pipeline_nested_function_still_blocked_with_allow_all() {
+        let stages = vec![serde_json::json!({
+            "$match": {"$function": {"body": "function() {}", "args": [], "lang": "js"}}
+        })];
+        let result = validate_raw_pipeline(&stages, true);
+        assert!(result.is_err());
+    }
+
+    // ── validate_raw_filter unknown operator ────────────────────
+
+    #[test]
+    fn raw_filter_unknown_operator_blocked_without_allow_all() {
+        let filter = serde_json::json!({"field": {"$customOp": 1}});
+        let result = validate_raw_filter(&filter, false);
+        assert!(result.is_err(), "unknown $ operator should be blocked");
+    }
+
+    #[test]
+    fn raw_filter_unknown_operator_allowed_with_allow_all() {
+        let filter = serde_json::json!({"field": {"$customOp": 1}});
+        let result = validate_raw_filter(&filter, true);
+        assert!(result.is_ok(), "unknown $ operator allowed when unsafe_allow_all");
+    }
+
+    #[test]
+    fn raw_filter_with_expr_runs_safety_check() {
+        // $expr in raw_filter triggers check_expr_safety
+        let filter = serde_json::json!({"$expr": {"$gt": ["$price", "$cost"]}});
+        assert!(validate_raw_filter(&filter, false).is_ok());
+    }
+
+    #[test]
+    fn raw_filter_expr_with_dangerous_op_blocked() {
+        let filter = serde_json::json!({"$expr": {"$function": {}}});
+        assert!(validate_raw_filter(&filter, false).is_err());
+    }
+
+    // ── check_expr_safety edge cases ────────────────────────────
+
+    #[test]
+    fn expr_safety_wrong_operand_count() {
+        let expr = serde_json::json!({"$gt": ["$a", "$b", "$c"]});
+        assert!(check_expr_safety(&expr).is_err());
+    }
+
+    #[test]
+    fn expr_safety_non_array_operand() {
+        let expr = serde_json::json!({"$gt": "not_an_array"});
+        assert!(check_expr_safety(&expr).is_err());
+    }
+
+    #[test]
+    fn expr_safety_object_operand_blocked() {
+        let expr = serde_json::json!({"$gt": [{"$function": {}}, "$b"]});
+        assert!(check_expr_safety(&expr).is_err());
+    }
+
+    #[test]
+    fn expr_safety_multiple_operators_blocked() {
+        let expr = serde_json::json!({"$gt": ["$a", "$b"], "$lt": ["$c", "$d"]});
+        assert!(check_expr_safety(&expr).is_err());
+    }
+
+    // ── Schema field validation for aggregate pipeline fields ───
+
+    #[test]
+    fn lookup_local_field_must_exist_in_schema() {
+        let checker = test_checker();
+        let schema = test_schema();
+        let query = ParsedQuery {
+            collection: "movies".into(),
+            operation: QueryOperation::Aggregate,
+            lookup: Some(crate::domain::models::LookupSpec {
+                from: "reviews".into(),
+                local_field: "nonexistent_field".into(),
+                foreign_field: "movie_id".into(),
+                as_field: "reviews".into(),
+            }),
+            ..Default::default()
+        };
+        assert!(checker.validate(&query, Some(&schema)).is_err());
+    }
+
+    #[test]
+    fn unwind_field_must_exist_in_schema() {
+        let checker = test_checker();
+        let schema = test_schema();
+        let query = ParsedQuery {
+            collection: "movies".into(),
+            operation: QueryOperation::Aggregate,
+            unwind: Some("nonexistent_array".into()),
+            ..Default::default()
+        };
+        assert!(checker.validate(&query, Some(&schema)).is_err());
+    }
+
+    #[test]
+    fn bucket_field_must_exist_in_schema() {
+        let checker = test_checker();
+        let schema = test_schema();
+        let query = ParsedQuery {
+            collection: "movies".into(),
+            operation: QueryOperation::Aggregate,
+            bucket: Some(crate::domain::models::BucketSpec {
+                group_by: "nonexistent_field".into(),
+                boundaries: vec![serde_json::json!(0), serde_json::json!(50), serde_json::json!(100)],
+                default_bucket: None,
+            }),
+            ..Default::default()
+        };
+        assert!(checker.validate(&query, Some(&schema)).is_err());
+    }
+
+    #[test]
+    fn or_filters_field_must_exist_in_schema() {
+        let checker = test_checker();
+        let schema = test_schema();
+        let query = ParsedQuery {
+            collection: "movies".into(),
+            operation: QueryOperation::Find,
+            or_filters: vec![vec![Filter {
+                field: "nonexistent_field".into(),
+                operator: FilterOperator::Eq,
+                value: serde_json::json!("value"),
+            }]],
+            ..Default::default()
+        };
+        assert!(checker.validate(&query, Some(&schema)).is_err());
+    }
+
+    #[test]
+    fn sort_field_injection_is_caught() {
+        let checker = test_checker();
+        use crate::domain::models::SortSpec;
+        let query = ParsedQuery {
+            collection: "movies".into(),
+            operation: QueryOperation::Find,
+            sort: Some(SortSpec { field: "$where".into(), order: 1 }),
+            ..Default::default()
+        };
+        assert!(checker.validate(&query, None).is_err());
+    }
+
+    #[test]
+    fn projection_injection_is_caught() {
+        let checker = test_checker();
+        let query = ParsedQuery {
+            collection: "movies".into(),
+            operation: QueryOperation::Find,
+            projection: vec!["$function".into()],
+            ..Default::default()
+        };
+        assert!(checker.validate(&query, None).is_err());
     }
 }

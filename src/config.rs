@@ -137,6 +137,13 @@ pub struct AppConfig {
     /// Whether to enable few-shot retrieval from query feedback.
     #[arg(long, env = "ENABLE_FEEDBACK_RETRIEVAL", default_value = "true")]
     pub enable_feedback_retrieval: bool,
+
+    /// Automatically create missing single-field indexes at startup.
+    /// When false (default), missing indexes are logged as warnings only.
+    /// When true, indexes are created in the background; large collections may
+    /// take time to build them.
+    #[arg(long, env = "AUTO_CREATE_INDEXES", default_value = "false")]
+    pub auto_create_indexes: bool,
 }
 
 fn default_allowed_ops() -> Vec<String> {
@@ -179,6 +186,7 @@ impl fmt::Debug for AppConfig {
             .field("embedding_url", &self.embedding_url)
             .field("feedback_top_k", &self.feedback_top_k)
             .field("enable_feedback_retrieval", &self.enable_feedback_retrieval)
+            .field("auto_create_indexes", &self.auto_create_indexes)
             .finish()
     }
 }
@@ -223,6 +231,7 @@ mod tests {
             embedding_url: None,
             feedback_top_k: 5,
             enable_feedback_retrieval: true,
+            auto_create_indexes: false,
         };
         let debug_output = format!("{:?}", config);
         assert!(!debug_output.contains("xoxb-secret"));
@@ -246,6 +255,15 @@ mod tests {
 
     #[test]
     fn test_llamacpp_provider_display() {
+        assert_eq!(format!("{}", LlmProvider::LlamaCpp), "llamacpp");
+    }
+
+    #[test]
+    fn all_provider_display_variants() {
+        assert_eq!(format!("{}", LlmProvider::Ollama), "ollama");
+        assert_eq!(format!("{}", LlmProvider::Anthropic), "anthropic");
+        assert_eq!(format!("{}", LlmProvider::OpenAI), "openai");
+        assert_eq!(format!("{}", LlmProvider::LmStudio), "lmstudio");
         assert_eq!(format!("{}", LlmProvider::LlamaCpp), "llamacpp");
     }
 }

@@ -6,3 +6,6 @@ pub mod domain;
 pub mod handlers;
 pub mod middleware;
 pub mod frontend;
+
+#[cfg(test)]
+pub mod test_helpers;

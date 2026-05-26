@@ -515,6 +515,26 @@ pub struct FeedbackRequest {
     pub schema_snapshot: String,
 }
 
+/// A single missing-index issue detected at startup.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IndexIssue {
+    /// Collection the issue belongs to.
+    pub collection: String,
+    /// Field that has no single-field index.
+    pub field: String,
+    /// Human-readable description.
+    pub message: String,
+    /// Exact mongosh command to fix the issue.
+    pub fix_command: String,
+}
+
+/// Request body for POST /api/issues/fix.
+#[derive(Debug, Deserialize)]
+pub struct FixIndexRequest {
+    pub collection: String,
+    pub field: String,
+}
+
 /// A record of feedback stored in MongoDB.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryFeedback {
