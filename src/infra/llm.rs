@@ -77,7 +77,14 @@ impl LlmClient {
             LlmProvider::OpenAI => self.call_openai(prompt, model_override).await?,
         };
 
-        let parsed = parse_llm_response(&raw)?;
+        let parsed = parse_llm_response(&raw).inspect_err(|e| {
+            tracing::warn!(
+                model = %model_used,
+                error = %e,
+                raw_response = %log_excerpt(&raw),
+                "LLM response could not be parsed"
+            );
+        })?;
         Ok((parsed, raw, model_used))
     }
 
@@ -183,15 +190,18 @@ impl LlmClient {
     }
 
     async fn call_ollama(&self, prompt: &str, model_override: Option<&str>) -> Result<String, AppError> {
-        let url = format!("{}/api/generate", self.ollama_url.trim_end_matches('/'));
         let model = model_override.unwrap_or(&self.model);
+        let response = self.generate_ollama(prompt, model, None).await?;
+        if !is_empty_json_object(&response) {
+            return Ok(response);
+        }
+        tracing::warn!(model = %model, "Ollama returned an empty JSON object; retrying with thinking disabled");
+        self.generate_ollama(prompt, model, Some(false)).await
+    }
 
-        let body = serde_json::json!({
-            "model": model,
-            "prompt": prompt,
-            "stream": false,
-            "format": "json"
-        });
+    async fn generate_ollama(&self, prompt: &str, model: &str, think: Option<bool>) -> Result<String, AppError> {
+        let url = format!("{}/api/generate", self.ollama_url.trim_end_matches('/'));
+        let body = ollama_request_body(prompt, model, think);
 
         tracing::debug!(provider = "ollama", model = %model, "Calling LLM");
 
@@ -483,6 +493,97 @@ You are a MongoDB query translator. Return ONLY valid JSON. No explanation.
         query = query
 )
 }
+/// Request body for Ollama `/api/generate`. `think: None` leaves the model's
+/// default reasoning behaviour, which larger models need for joins.
+fn ollama_request_body(prompt: &str, model: &str, think: Option<bool>) -> serde_json::Value {
+    let mut body = serde_json::json!({
+        "model": model,
+        "prompt": prompt,
+        "stream": false,
+        "format": "json"
+    });
+    if let Some(think) = think {
+        body["think"] = serde_json::Value::Bool(think);
+    }
+    body
+}
+
+/// Some thinking models (e.g. qwen3:8b) intermittently answer `format: "json"`
+/// requests with an empty object.
+fn is_empty_json_object(text: &str) -> bool {
+    let trimmed = text.trim();
+    trimmed.is_empty()
+        || (trimmed.starts_with('{') && trimmed.ends_with('}') && trimmed[1..trimmed.len() - 1].trim().is_empty())
+}
+
+/// Maximum characters of raw LLM output written to logs on parse failure.
+const LOG_EXCERPT_CHARS: usize = 500;
+
+/// Truncate raw LLM output for logging, respecting char boundaries.
+fn log_excerpt(text: &str) -> String {
+    if text.chars().count() <= LOG_EXCERPT_CHARS {
+        return text.to_string();
+    }
+    let mut excerpt: String = text.chars().take(LOG_EXCERPT_CHARS).collect();
+    excerpt.push('…');
+    excerpt
+}
+
+/// Models often reuse the prompt's structured `lookup` keys (local_field,
+/// foreign_field, as_field) inside native `$lookup` stages, which MongoDB
+/// rejects. Rename them to the native camelCase keys.
+fn normalize_lookup_stage(stage: &serde_json::Value) -> serde_json::Value {
+    const RENAMES: [(&str, &str); 3] = [
+        ("local_field", "localField"),
+        ("foreign_field", "foreignField"),
+        ("as_field", "as"),
+    ];
+    let Some(lookup) = stage.get("$lookup").and_then(|l| l.as_object()) else {
+        return stage.clone();
+    };
+    let normalized: serde_json::Map<String, serde_json::Value> = lookup
+        .iter()
+        .map(|(key, value)| {
+            let key = RENAMES
+                .iter()
+                .find(|(snake, _)| snake == key)
+                .map_or(key.as_str(), |(_, camel)| camel);
+            (key.to_string(), value.clone())
+        })
+        .collect();
+    serde_json::json!({ "$lookup": normalized })
+}
+
+/// `$lookup` output is an array of joined documents, so `$unwind: "$<as>.x"`
+/// matches nothing until `<as>` itself is unwound. Models often skip that
+/// step; insert the missing `$unwind: "$<as>"` before the first such stage.
+fn unwind_join_parents(stages: Vec<serde_json::Value>) -> Vec<serde_json::Value> {
+    let mut joins: Vec<String> = Vec::new();
+    let mut unwound: Vec<String> = Vec::new();
+    let mut result = Vec::with_capacity(stages.len());
+    for stage in stages {
+        if let Some(as_name) = stage.pointer("/$lookup/as").and_then(|v| v.as_str()) {
+            joins.push(as_name.to_string());
+        }
+        let unwind_path = stage
+            .get("$unwind")
+            .and_then(|u| u.as_str().or_else(|| u.get("path").and_then(|p| p.as_str())))
+            .map(|p| p.trim_start_matches('$').to_string());
+        if let Some(path) = unwind_path {
+            let parent = joins.iter().find(|j| path.starts_with(&format!("{j}."))).cloned();
+            if let Some(parent) = parent {
+                if !unwound.contains(&parent) {
+                    result.push(serde_json::json!({ "$unwind": format!("${parent}") }));
+                    unwound.push(parent);
+                }
+            }
+            unwound.push(path);
+        }
+        result.push(stage);
+    }
+    result
+}
+
 fn parse_llm_response(text: &str) -> Result<ParsedQuery, AppError> {
     let cleaned_text = strip_markdown_fences(text);
     let obj: serde_json::Value = serde_json::from_str(&cleaned_text)
@@ -535,9 +636,19 @@ fn parse_llm_response(text: &str) -> Result<ParsedQuery, AppError> {
 
     let sort = obj.get("sort").and_then(|v| {
         let s = v.as_object()?;
-        let field = s.get("field").and_then(|f| f.as_str())?.to_string();
-        let order = s.get("order").and_then(|o| o.as_i64()).unwrap_or(1) as i32;
-        Some(crate::domain::models::SortSpec { field, order })
+        if let Some(field) = s.get("field").and_then(|f| f.as_str()) {
+            let order = s.get("order").and_then(|o| o.as_i64()).unwrap_or(1) as i32;
+            return Some(crate::domain::models::SortSpec { field: field.to_string(), order });
+        }
+        // Native MongoDB shorthand {"<field>": 1 | -1}; only a single key is
+        // supported because SortSpec holds one field.
+        match s.iter().collect::<Vec<_>>().as_slice() {
+            [(field, order)] => {
+                let order = if order.as_i64()? < 0 { -1 } else { 1 };
+                Some(crate::domain::models::SortSpec { field: (*field).clone(), order })
+            }
+            _ => None,
+        }
     });
 
     let limit = obj.get("limit")
@@ -588,10 +699,23 @@ fn parse_llm_response(text: &str) -> Result<ParsedQuery, AppError> {
 
     let raw_pipeline = obj.get("raw_pipeline")
         .and_then(|v| v.as_array())
-        .map(|arr| arr.to_vec());
+        .map(|arr| unwind_join_parents(arr.iter().map(normalize_lookup_stage).collect()));
 
     let raw_filter = obj.get("raw_filter").cloned()
         .filter(|v| v.is_object());
+
+    // The executor only builds $lookup/$unwind/$group/... for aggregate, so a
+    // "find" carrying pipeline stages would silently drop them.
+    let has_pipeline_stages = lookup.is_some()
+        || unwind.is_some()
+        || group_by.is_some()
+        || bucket.is_some()
+        || facet.is_some();
+    let operation = if operation == crate::domain::models::QueryOperation::Find && has_pipeline_stages {
+        crate::domain::models::QueryOperation::Aggregate
+    } else {
+        operation
+    };
 
     Ok(crate::domain::models::ParsedQuery {
         collection,
@@ -1090,6 +1214,132 @@ mod tests {
         let sort = parsed.sort.unwrap();
         assert_eq!(sort.field, "year");
         assert_eq!(sort.order, -1);
+    }
+
+    #[test]
+    fn parse_llm_response_with_shorthand_sort_ascending() {
+        let json = r#"{"collection":"movies","operation":"find","filters":[],"sort":{"year":1}}"#;
+        let sort = parse_llm_response(json).unwrap().sort.unwrap();
+        assert_eq!(sort.field, "year");
+        assert_eq!(sort.order, 1);
+    }
+
+    #[test]
+    fn parse_llm_response_with_shorthand_sort_descending_nested_field() {
+        let json = r#"{"collection":"movies","operation":"find","filters":[],"sort":{"imdb.rating":-1}}"#;
+        let sort = parse_llm_response(json).unwrap().sort.unwrap();
+        assert_eq!(sort.field, "imdb.rating");
+        assert_eq!(sort.order, -1);
+    }
+
+    #[test]
+    fn parse_llm_response_shorthand_sort_with_multiple_keys_is_ignored() {
+        let json = r#"{"collection":"movies","operation":"find","filters":[],"sort":{"year":1,"title":1}}"#;
+        assert!(parse_llm_response(json).unwrap().sort.is_none());
+    }
+
+    #[test]
+    fn ollama_request_keeps_model_default_thinking_and_forces_json() {
+        let body = ollama_request_body("prompt text", "qwen3:8b", None);
+        assert!(body.get("think").is_none());
+        assert_eq!(body["format"], "json");
+        assert_eq!(body["stream"], serde_json::json!(false));
+        assert_eq!(body["model"], "qwen3:8b");
+        assert_eq!(body["prompt"], "prompt text");
+    }
+
+    #[test]
+    fn ollama_retry_request_disables_thinking() {
+        let body = ollama_request_body("prompt text", "qwen3:8b", Some(false));
+        assert_eq!(body["think"], serde_json::json!(false));
+    }
+
+    #[test]
+    fn empty_json_object_responses_are_detected() {
+        assert!(is_empty_json_object("{}"));
+        assert!(is_empty_json_object("{ \n }"));
+        assert!(is_empty_json_object(""));
+        assert!(!is_empty_json_object(r#"{"collection":"movies"}"#));
+    }
+
+    #[test]
+    fn log_excerpt_truncates_on_char_boundary() {
+        let text = "é".repeat(600);
+        let excerpt = log_excerpt(&text);
+        assert_eq!(excerpt.chars().count(), LOG_EXCERPT_CHARS + 1);
+        assert!(excerpt.ends_with('…'));
+        assert_eq!(log_excerpt("{}"), "{}");
+    }
+
+    #[test]
+    fn raw_pipeline_lookup_snake_case_keys_are_normalized() {
+        let json = r#"{"collection":"movies","operation":"aggregate","raw_pipeline":[
+            {"$lookup":{"from":"reviews","local_field":"title","foreign_field":"movie","as_field":"r"}},
+            {"$match":{"r":{"$ne":[]}}}]}"#;
+        let stages = parse_llm_response(json).unwrap().raw_pipeline.unwrap();
+        assert_eq!(
+            stages[0],
+            serde_json::json!({"$lookup":{"from":"reviews","localField":"title","foreignField":"movie","as":"r"}})
+        );
+        assert_eq!(stages[1], serde_json::json!({"$match":{"r":{"$ne":[]}}}));
+    }
+
+    fn raw_stages(pipeline: &str) -> Vec<serde_json::Value> {
+        let json = format!(r#"{{"collection":"reviews","operation":"aggregate","raw_pipeline":{pipeline}}}"#);
+        parse_llm_response(&json).unwrap().raw_pipeline.unwrap()
+    }
+
+    #[test]
+    fn unwind_of_nested_join_field_gets_missing_parent_unwind() {
+        let stages = raw_stages(r#"[
+            {"$lookup":{"from":"movies","localField":"movie","foreignField":"title","as":"m"}},
+            {"$unwind":"$m.genres"},
+            {"$group":{"_id":"$m.genres","avg":{"$avg":"$score"}}}]"#);
+        assert_eq!(stages[1], serde_json::json!({"$unwind":"$m"}));
+        assert_eq!(stages[2], serde_json::json!({"$unwind":"$m.genres"}));
+        assert_eq!(stages.len(), 4);
+    }
+
+    #[test]
+    fn unwind_with_parent_already_unwound_is_untouched() {
+        let stages = raw_stages(r#"[
+            {"$lookup":{"from":"movies","localField":"movie","foreignField":"title","as":"m"}},
+            {"$unwind":"$m"},
+            {"$unwind":{"path":"$m.genres"}}]"#);
+        assert_eq!(stages.len(), 3);
+    }
+
+    #[test]
+    fn unwind_of_non_join_field_is_untouched() {
+        let stages = raw_stages(r#"[{"$unwind":"$tags.name"}]"#);
+        assert_eq!(stages, vec![serde_json::json!({"$unwind":"$tags.name"})]);
+    }
+
+    #[test]
+    fn find_with_lookup_is_promoted_to_aggregate() {
+        let json = r#"{"collection":"reviews","operation":"find","filters":[],
+            "lookup":{"from":"movies","local_field":"movie","foreign_field":"title","as_field":"m"},
+            "projection":["movie","m.year"]}"#;
+        let parsed = parse_llm_response(json).unwrap();
+        assert_eq!(parsed.operation, crate::domain::models::QueryOperation::Aggregate);
+    }
+
+    #[test]
+    fn plain_find_stays_find() {
+        let json = r#"{"collection":"reviews","operation":"find","filters":[]}"#;
+        let parsed = parse_llm_response(json).unwrap();
+        assert_eq!(parsed.operation, crate::domain::models::QueryOperation::Find);
+    }
+
+    #[test]
+    fn raw_pipeline_lookup_camel_case_keys_are_untouched() {
+        let json = r#"{"collection":"movies","operation":"aggregate","raw_pipeline":[
+            {"$lookup":{"from":"reviews","localField":"title","foreignField":"movie","as":"r"}}]}"#;
+        let stages = parse_llm_response(json).unwrap().raw_pipeline.unwrap();
+        assert_eq!(
+            stages[0],
+            serde_json::json!({"$lookup":{"from":"reviews","localField":"title","foreignField":"movie","as":"r"}})
+        );
     }
 
     #[test]
