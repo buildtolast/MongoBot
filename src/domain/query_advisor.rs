@@ -63,6 +63,7 @@ pub fn analyze_query(
     check_same_field_range(query, &mut advice);
     check_aggregate_no_match(query, &mut advice);
     check_lookup_performance(query, &mut advice);
+    check_lookup_always_matches(query, &mut advice);
     check_unwind_warning(query, &mut advice);
     check_or_query(query, &mut advice);
     check_group_high_cardinality(query, &mut advice);
@@ -609,6 +610,47 @@ fn check_lookup_performance(query: &ParsedQuery, advice: &mut Vec<QueryAdvice>) 
                 query.collection, lookup.from, lookup.from, lookup.foreign_field
             ),
         ));
+    }
+}
+
+/// Warn when a raw pipeline filters a $lookup output with `$ne: null` or
+/// `$exists: true`. $lookup always produces an array (empty when nothing
+/// joins), so these conditions match every document. Use `{"$ne": []}` or
+/// `{"<as>.0": {"$exists": true}}` instead.
+fn check_lookup_always_matches(query: &ParsedQuery, advice: &mut Vec<QueryAdvice>) {
+    let Some(ref stages) = query.raw_pipeline else {
+        return;
+    };
+    let mut join_outputs: Vec<&str> = Vec::new();
+    for stage in stages {
+        if let Some(as_name) = stage.pointer("/$lookup/as").and_then(|v| v.as_str()) {
+            join_outputs.push(as_name);
+            continue;
+        }
+        let Some(conditions) = stage.get("$match").and_then(|m| m.as_object()) else {
+            continue;
+        };
+        for (field, cond) in conditions {
+            if !join_outputs.contains(&field.as_str()) {
+                continue;
+            }
+            let Some(ops) = cond.as_object() else { continue };
+            let excludes_empty = ops.get("$ne").is_some_and(|v| v.as_array().is_some_and(|a| a.is_empty()))
+                || ops.contains_key("$size")
+                || ops.contains_key("$not");
+            let never_null = ops.get("$ne").is_some_and(|v| v.is_null())
+                || ops.get("$exists") == Some(&serde_json::Value::Bool(true));
+            if never_null && !excludes_empty {
+                advice.push(QueryAdvice::warning(
+                    "LOOKUP_ALWAYS_MATCHES",
+                    format!(
+                        "'{field}' is a $lookup output, which is always an array (empty when nothing \
+                         joins), so this $match keeps every document. Use {{\"{field}\": {{\"$ne\": []}}}} \
+                         to keep only documents with a match."
+                    ),
+                ));
+            }
+        }
     }
 }
 
@@ -1355,5 +1397,66 @@ mod tests {
         };
         let advice = analyze_query(&q, None);
         assert!(advice.iter().any(|a| a.code == "GROUP_HIGH_CARDINALITY"));
+    }
+
+    fn raw_join_then_match(match_cond: serde_json::Value) -> ParsedQuery {
+        ParsedQuery {
+            collection: "movies".to_string(),
+            operation: QueryOperation::Aggregate,
+            raw_pipeline: Some(vec![
+                serde_json::json!({"$lookup": {"from": "reviews", "localField": "title",
+                    "foreignField": "movie", "as": "review_info"}}),
+                serde_json::json!({"$match": {"review_info": match_cond}}),
+            ]),
+            ..Default::default()
+        }
+    }
+
+    fn has_always_matches(q: &ParsedQuery) -> bool {
+        analyze_query(q, None).iter().any(|a| a.code == "LOOKUP_ALWAYS_MATCHES")
+    }
+
+    #[test]
+    fn lookup_match_ne_null_warns_because_lookup_output_is_never_null() {
+        assert!(has_always_matches(&raw_join_then_match(serde_json::json!({"$ne": null}))));
+    }
+
+    #[test]
+    fn lookup_match_exists_true_warns() {
+        assert!(has_always_matches(&raw_join_then_match(serde_json::json!({"$exists": true}))));
+    }
+
+    #[test]
+    fn lookup_match_ne_empty_array_is_correct_and_does_not_warn() {
+        assert!(!has_always_matches(&raw_join_then_match(serde_json::json!({"$ne": []}))));
+        assert!(!has_always_matches(&raw_join_then_match(
+            serde_json::json!({"$exists": true, "$ne": []})
+        )));
+    }
+
+    #[test]
+    fn lookup_match_on_first_element_does_not_warn() {
+        let q = ParsedQuery {
+            raw_pipeline: Some(vec![
+                serde_json::json!({"$lookup": {"from": "reviews", "localField": "title",
+                    "foreignField": "movie", "as": "review_info"}}),
+                serde_json::json!({"$match": {"review_info.0": {"$exists": true}}}),
+            ]),
+            ..raw_join_then_match(serde_json::json!(null))
+        };
+        assert!(!has_always_matches(&q));
+    }
+
+    #[test]
+    fn match_before_lookup_does_not_warn() {
+        let q = ParsedQuery {
+            raw_pipeline: Some(vec![
+                serde_json::json!({"$match": {"review_info": {"$ne": null}}}),
+                serde_json::json!({"$lookup": {"from": "reviews", "localField": "title",
+                    "foreignField": "movie", "as": "review_info"}}),
+            ]),
+            ..raw_join_then_match(serde_json::json!(null))
+        };
+        assert!(!has_always_matches(&q));
     }
 }

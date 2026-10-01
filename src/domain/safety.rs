@@ -51,15 +51,33 @@ impl SafetyChecker {
     }
 
     /// Validate a parsed query against safety rules and schema.
+    /// A query with a `lookup` is rejected unless the joined collection is
+    /// known; use `validate_with_join` to supply its schema.
     pub fn validate(
         &self,
         query: &ParsedQuery,
         schema: Option<&CollectionSchema>,
     ) -> Result<(), SafetyError> {
+        self.validate_with_join(query, schema, None)
+    }
+
+    /// Validate a parsed query, checking `$lookup` fields against the joined
+    /// (`lookup.from`) collection's schema.
+    pub fn validate_with_join(
+        &self,
+        query: &ParsedQuery,
+        schema: Option<&CollectionSchema>,
+        from_schema: Option<&CollectionSchema>,
+    ) -> Result<(), SafetyError> {
         // 0. Absolute denylist — internal collections are never queryable,
         //    even with unsafe_allow_all enabled.
         if INTERNAL_COLLECTIONS.contains(&query.collection.as_str()) {
             return Err(SafetyError::UnknownCollection(query.collection.clone()));
+        }
+        if let Some(ref lookup) = query.lookup {
+            if INTERNAL_COLLECTIONS.contains(&lookup.from.as_str()) {
+                return Err(SafetyError::UnknownCollection(lookup.from.clone()));
+            }
         }
 
         // 1. Check operation is allowed
@@ -200,14 +218,48 @@ impl SafetyChecker {
             Ok(())
         };
 
+        // Fields of the joined collection, or None when it is unknown and
+        // unsafe_allow_all permits skipping validation of joined references.
+        let from_fields: Option<Vec<&str>> = match (&query.lookup, from_schema) {
+            (None, _) => None,
+            (Some(_), Some(s)) => Some(s.fields.iter().map(|f| f.name.as_str()).collect()),
+            (Some(_), None) if self.unsafe_allow_all => None,
+            (Some(lookup), None) => return Err(SafetyError::UnknownCollection(lookup.from.clone())),
+        };
+
+        // Stages after $lookup may also reference the join output: the `as`
+        // name itself or `<as>.<field of the joined collection>`.
+        let check_post_join_field = |field: &str| -> Result<(), SafetyError> {
+            if let Some(ref lookup) = query.lookup {
+                let joined = field
+                    .strip_prefix(lookup.as_field.as_str())
+                    .filter(|rest| rest.is_empty() || rest.starts_with('.'));
+                if let Some(rest) = joined {
+                    let rest = rest.trim_start_matches('.');
+                    return match &from_fields {
+                        Some(known) if !rest.is_empty() && !field_matches(rest, known) => {
+                            Err(SafetyError::UnknownField {
+                                field: rest.to_string(),
+                                collection: lookup.from.clone(),
+                            })
+                        }
+                        _ => Ok(()),
+                    };
+                }
+            }
+            check_field(field)
+        };
+
+        // Filters become the leading $match, which runs before $lookup, so they
+        // may only reference the base collection.
         for filter in &query.filters {
             check_field(&filter.field)?;
         }
         for proj in &query.projection {
-            check_field(proj)?;
+            check_post_join_field(proj)?;
         }
         if let Some(ref sort) = query.sort {
-            check_field(&sort.field)?;
+            check_post_join_field(&sort.field)?;
         }
         // Validate or_filters fields
         for branch in &query.or_filters {
@@ -218,24 +270,30 @@ impl SafetyChecker {
         // Validate aggregate field references
         if let Some(ref group) = query.group_by {
             if !group.field.is_empty() && group.field != "null" {
-                check_field(&group.field)?;
+                check_post_join_field(&group.field)?;
             }
             for acc in &group.accumulators {
                 if !acc.input_field.is_empty() && acc.input_field != "1" {
-                    check_field(acc.input_field.trim_start_matches('$'))?;
+                    check_post_join_field(acc.input_field.trim_start_matches('$'))?;
                 }
             }
         }
         if let Some(ref lookup) = query.lookup {
             check_field(&lookup.local_field)?;
-            check_field(&lookup.foreign_field)?;
-            check_field(&lookup.as_field)?;
+            if let Some(ref known) = from_fields {
+                if !field_matches(&lookup.foreign_field, known) {
+                    return Err(SafetyError::UnknownField {
+                        field: lookup.foreign_field.clone(),
+                        collection: lookup.from.clone(),
+                    });
+                }
+            }
         }
         if let Some(ref unwind) = query.unwind {
-            check_field(unwind.trim_start_matches('$'))?;
+            check_post_join_field(unwind.trim_start_matches('$'))?;
         }
         if let Some(ref bucket) = query.bucket {
-            check_field(&bucket.group_by)?;
+            check_post_join_field(&bucket.group_by)?;
         }
 
         Ok(())
@@ -948,6 +1006,140 @@ mod tests {
     fn expr_safety_multiple_operators_blocked() {
         let expr = serde_json::json!({"$gt": ["$a", "$b"], "$lt": ["$c", "$d"]});
         assert!(check_expr_safety(&expr).is_err());
+    }
+
+    // ── Cross-collection $lookup validation ───
+
+    fn schema_with(name: &str, fields: &[&str]) -> CollectionSchema {
+        CollectionSchema {
+            name: name.into(),
+            description: String::new(),
+            fields: fields
+                .iter()
+                .map(|f| FieldDef {
+                    name: (*f).into(),
+                    field_type: "string".into(),
+                    description: None,
+                })
+                .collect(),
+            indexes: vec![],
+            source: "test".into(),
+        }
+    }
+
+    fn reviews_schema() -> CollectionSchema {
+        schema_with("reviews", &["movie", "score", "reviewer"])
+    }
+
+    fn movies_schema() -> CollectionSchema {
+        schema_with("movies", &["title", "year", "genres", "imdb.rating"])
+    }
+
+    fn reviews_join_movies() -> ParsedQuery {
+        ParsedQuery {
+            collection: "reviews".into(),
+            operation: QueryOperation::Aggregate,
+            lookup: Some(crate::domain::models::LookupSpec {
+                from: "movies".into(),
+                local_field: "movie".into(),
+                foreign_field: "title".into(),
+                as_field: "movie_info".into(),
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn join_foreign_field_is_validated_against_from_collection() {
+        let result = test_checker().validate_with_join(
+            &reviews_join_movies(),
+            Some(&reviews_schema()),
+            Some(&movies_schema()),
+        );
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[test]
+    fn join_rejects_foreign_field_missing_from_from_collection() {
+        let mut query = reviews_join_movies();
+        query.lookup.as_mut().unwrap().foreign_field = "no_such_field".into();
+        let result =
+            test_checker().validate_with_join(&query, Some(&reviews_schema()), Some(&movies_schema()));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn join_allows_projection_and_sort_on_joined_fields() {
+        let query = ParsedQuery {
+            unwind: Some("movie_info".into()),
+            projection: vec!["movie".into(), "movie_info.year".into(), "movie_info.imdb.rating".into()],
+            sort: Some(SortSpec { field: "movie_info.year".into(), order: -1 }),
+            ..reviews_join_movies()
+        };
+        let result =
+            test_checker().validate_with_join(&query, Some(&reviews_schema()), Some(&movies_schema()));
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[test]
+    fn join_rejects_unknown_joined_field() {
+        let query = ParsedQuery {
+            projection: vec!["movie_info.no_such_field".into()],
+            ..reviews_join_movies()
+        };
+        let result =
+            test_checker().validate_with_join(&query, Some(&reviews_schema()), Some(&movies_schema()));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn join_allows_group_by_joined_field() {
+        let query = ParsedQuery {
+            unwind: Some("movie_info.genres".into()),
+            group_by: Some(crate::domain::models::GroupSpec {
+                field: "movie_info.genres".into(),
+                accumulators: vec![crate::domain::models::Accumulator {
+                    output_field: "avg_score".into(),
+                    operator: "$avg".into(),
+                    input_field: "score".into(),
+                }],
+            }),
+            ..reviews_join_movies()
+        };
+        let result =
+            test_checker().validate_with_join(&query, Some(&reviews_schema()), Some(&movies_schema()));
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[test]
+    fn join_rejects_filter_on_joined_field_because_match_runs_before_lookup() {
+        let query = ParsedQuery {
+            filters: vec![Filter {
+                field: "movie_info.year".into(),
+                operator: FilterOperator::Gt,
+                value: serde_json::json!(2000),
+            }],
+            ..reviews_join_movies()
+        };
+        let result =
+            test_checker().validate_with_join(&query, Some(&reviews_schema()), Some(&movies_schema()));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn join_rejects_unknown_from_collection() {
+        let result =
+            test_checker().validate_with_join(&reviews_join_movies(), Some(&reviews_schema()), None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn join_rejects_internal_from_collection_even_with_unsafe_allow_all() {
+        let mut query = reviews_join_movies();
+        query.lookup.as_mut().unwrap().from = "query_feedback".into();
+        let checker = test_checker().with_unsafe_allow_all(true);
+        let result = checker.validate_with_join(&query, Some(&reviews_schema()), None);
+        assert!(result.is_err());
     }
 
     // ── Schema field validation for aggregate pipeline fields ───

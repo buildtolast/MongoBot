@@ -133,7 +133,7 @@ async fn process_query(
     let (parsed, _raw, _model) = state.llm.parse_query(query_text, &schema_context, None, None).await?;
 
     let schema = state.get_schema(&parsed.collection);
-    state.safety.validate(&parsed, schema.as_ref())?;
+    state.safety.validate_with_join(&parsed, schema.as_ref(), state.join_schema(&parsed).as_ref())?;
 
     let collection = parsed.collection.clone();
     let operation = parsed.operation.as_str().to_string();

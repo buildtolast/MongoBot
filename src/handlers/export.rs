@@ -20,7 +20,7 @@ pub async fn handle_export(
 
     // 2. Validate query safety
     let schema = state.get_schema(&parsed.collection);
-    state.safety.validate(&parsed, schema.as_ref())?;
+    state.safety.validate_with_join(&parsed, schema.as_ref(), state.join_schema(&parsed).as_ref())?;
 
     // 3. Execute the query
     let collection_name = parsed.collection.clone();

@@ -461,6 +461,25 @@ fn to_bson_array(value: &serde_json::Value) -> Result<Bson, AppError> {
     }
 }
 
+/// `$unwind` paths for the query. A `$lookup` output is an array of joined
+/// documents, so unwinding `<as>.x` first requires unwinding `<as>` itself.
+fn unwind_paths(query: &ParsedQuery) -> Vec<String> {
+    let Some(ref unwind_field) = query.unwind else {
+        return Vec::new();
+    };
+    let field = unwind_field.trim_start_matches('$');
+    let join_parent = query
+        .lookup
+        .as_ref()
+        .map(|lookup| lookup.as_field.as_str())
+        .filter(|as_field| field.starts_with(&format!("{as_field}.")));
+    join_parent
+        .map(|parent| format!("${parent}"))
+        .into_iter()
+        .chain(std::iter::once(format!("${field}")))
+        .collect()
+}
+
 /// Build a full aggregate pipeline from ParsedQuery structured fields.
 /// Order: $match → $lookup → $unwind → $group → $bucket → $facet → $sort → $limit → $project
 fn build_aggregate_pipeline(query: &ParsedQuery, match_filter: &Document) -> Result<Vec<Document>, AppError> {
@@ -484,12 +503,7 @@ fn build_aggregate_pipeline(query: &ParsedQuery, match_filter: &Document) -> Res
     }
 
     // $unwind — flatten array field
-    if let Some(ref unwind_field) = query.unwind {
-        let path = if unwind_field.starts_with('$') {
-            unwind_field.clone()
-        } else {
-            format!("${unwind_field}")
-        };
+    for path in unwind_paths(query) {
         pipeline.push(doc! { "$unwind": path });
     }
 
@@ -645,12 +659,7 @@ pub fn build_mongo_shell_command(query: &ParsedQuery) -> String {
                 ));
             }
 
-            if let Some(ref unwind_field) = query.unwind {
-                let path = if unwind_field.starts_with('$') {
-                    unwind_field.clone()
-                } else {
-                    format!("${unwind_field}")
-                };
+            for path in unwind_paths(query) {
                 stages.push(format!("{{ $unwind: \"{}\" }}", path));
             }
 
@@ -1203,6 +1212,29 @@ mod tests {
         let pipeline = build_aggregate_pipeline(&query, &filter).unwrap();
         let unwind_stage = pipeline.iter().find(|s| s.contains_key("$unwind")).unwrap();
         assert_eq!(unwind_stage.get_str("$unwind").unwrap(), "$items");
+    }
+
+    #[test]
+    fn unwind_of_nested_join_field_unwinds_join_output_first() {
+        let query = ParsedQuery {
+            collection: "reviews".into(),
+            operation: QueryOperation::Aggregate,
+            lookup: Some(crate::domain::models::LookupSpec {
+                from: "movies".into(),
+                local_field: "movie".into(),
+                foreign_field: "title".into(),
+                as_field: "movie_data".into(),
+            }),
+            unwind: Some("movie_data.genres".into()),
+            ..Default::default()
+        };
+        let filter = build_filter(&query, None).unwrap();
+        let pipeline = build_aggregate_pipeline(&query, &filter).unwrap();
+        let unwinds: Vec<&str> = pipeline
+            .iter()
+            .filter_map(|s| s.get_str("$unwind").ok())
+            .collect();
+        assert_eq!(unwinds, vec!["$movie_data", "$movie_data.genres"]);
     }
 
     #[test]

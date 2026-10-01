@@ -3,7 +3,7 @@ use std::time::Instant;
 use chrono::Utc;
 
 use crate::domain::executor;
-use crate::domain::models::{ConfirmRequest, ExecutionTiming, QueryRequest, QueryResponse, FeedbackType, QueryFeedback};
+use crate::domain::models::{ConfirmRequest, ExecutionTiming, ParsedQuery, QueryRequest, QueryResponse, FeedbackType, QueryFeedback};
 use crate::domain::query_advisor;
 use crate::error::AppError;
 use crate::state::AppState;
@@ -68,7 +68,7 @@ pub async fn handle_query(
     // 3. Validate query safety (with optional schema context)
     let safety_start = Instant::now();
     let schema = state.get_schema(&parsed.collection);
-    state.safety.validate(&parsed, schema.as_ref())?;
+    state.safety.validate_with_join(&parsed, schema.as_ref(), state.join_schema(&parsed).as_ref())?;
     let safety_check_ms = safety_start.elapsed().as_millis() as u64;
 
     // 4a. Preview mode (or query-only mode): return parsed query without executing
@@ -167,7 +167,9 @@ pub async fn handle_query(
 
     // 5. Execute the read query against MongoDB
     let mongo_start = Instant::now();
-    let result = executor::execute(&state.mongo, &parsed, schema.as_ref()).await?;
+    let result = executor::execute(&state.mongo, &parsed, schema.as_ref())
+        .await
+        .inspect_err(|e| log_execution_failure(&parsed, e))?;
     let mongo_exec_ms = mongo_start.elapsed().as_millis() as u64;
 
     // 6. Build response with index analysis
@@ -205,6 +207,15 @@ pub async fn handle_query(
     Ok(HttpResponse::Ok().json(response))
 }
 
+/// Log the query that MongoDB rejected; the client only receives a sanitized error.
+fn log_execution_failure(parsed: &ParsedQuery, error: &AppError) {
+    tracing::warn!(
+        error = %error,
+        query = %serde_json::to_string(parsed).unwrap_or_default(),
+        "Query execution failed"
+    );
+}
+
 /// POST /api/execute — Execute a confirmed query (writes or approved reads).
 pub async fn handle_execute(
     state: web::Data<AppState>,
@@ -225,11 +236,13 @@ pub async fn handle_execute(
 
     // Validate safety
     let schema = state.get_schema(&parsed.collection);
-    state.safety.validate(parsed, schema.as_ref())?;
+    state.safety.validate_with_join(parsed, schema.as_ref(), state.join_schema(parsed).as_ref())?;
 
     // Execute the query
     let start = Instant::now();
-    let result = executor::execute(&state.mongo, parsed, schema.as_ref()).await?;
+    let result = executor::execute(&state.mongo, parsed, schema.as_ref())
+        .await
+        .inspect_err(|e| log_execution_failure(parsed, e))?;
     let execution_ms = start.elapsed().as_millis() as u64;
 
     let mongo_query = executor::build_mongo_shell_command(parsed);

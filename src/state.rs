@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::config::AppConfig;
-use crate::domain::models::{CollectionSchema, IndexIssue};
+use crate::domain::models::{CollectionSchema, IndexIssue, ParsedQuery};
 use crate::domain::safety::SafetyChecker;
 use crate::infra::llm::LlmClient;
 use crate::infra::mongo::MongoPool;
@@ -62,6 +62,11 @@ impl AppState {
 
     pub fn get_schema(&self, name: &str) -> Option<CollectionSchema> {
         self.schemas.get(name).map(|entry| entry.value().clone())
+    }
+
+    /// Schema of the collection joined by the query's `$lookup`, if any.
+    pub fn join_schema(&self, query: &ParsedQuery) -> Option<CollectionSchema> {
+        query.lookup.as_ref().and_then(|lookup| self.get_schema(&lookup.from))
     }
 
     /// Re-introspect MongoDB and reload schemas. Called at runtime when
