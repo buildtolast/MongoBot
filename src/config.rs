@@ -56,7 +56,7 @@ pub struct AppConfig {
     pub ollama_url: String,
 
     /// Ollama model name
-    #[arg(long, env = "OLLAMA_MODEL", default_value = "qwen3-coder:30b")]
+    #[arg(long, env = "OLLAMA_MODEL", default_value = "Qwen3.8:latest")]
     pub ollama_model: String,
 
     /// LM Studio server URL (OpenAI-compatible API)
@@ -211,7 +211,7 @@ mod tests {
             mongo_db_name: "testdb".into(),
             llm_provider: LlmProvider::Ollama,
             ollama_url: "http://localhost:11434".into(),
-            ollama_model: "qwen3-coder:30b".into(),
+            ollama_model: "Qwen3.8:latest".into(),
             lmstudio_url: "http://localhost:1234".into(),
             lmstudio_model: None,
             llamacpp_url: "http://localhost:8080".into(),

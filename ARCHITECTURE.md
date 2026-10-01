@@ -235,7 +235,7 @@ LM Studio, llama.cpp, and OpenAI share a `call_openai_compatible()` implementati
 | Availability | No internet needed | No internet needed | Requires internet + API key |
 | JSON reliability | `format: "json"` enforced | `response_format` enforced | Prompt-based (less reliable) |
 
-**Default model:** `qwen3-coder:30b` — reliable JSON schema compliance for MongoDB query generation.
+**Default model:** `Qwen3.8:latest` — reliable JSON output and correct `$lookup` joins across collections.
 
 #### Model Comparison Results
 
@@ -244,7 +244,7 @@ LM Studio, llama.cpp, and OpenAI share a `call_openai_compatible()` implementati
 | `qwen3-coder:30b` | High — consistently produces valid ParsedQuery JSON | Slower (~2-5s) | Uses `{ "field": "name", "order": -1 }` (matches schema) | **Recommended default** |
 | `gemma3:4b` | Lower — uses different sort format causing parse failures | Faster (~0.5-1s) | Uses `{ "name": -1 }` (flat map, not ParsedQuery-compatible) | Faster but unreliable |
 
-Use `qwen3-coder:30b` for production reliability. Use `gemma3:4b` only if speed is critical and you can tolerate occasional parse failures.
+Use `Qwen3.8:latest` (the default) for production reliability: it is the model verified against the multi-collection join tests. Use `gemma3:4b` only if speed is critical and you can tolerate occasional parse failures.
 
 **Example input/output:**
 ```
@@ -517,7 +517,7 @@ Schemas are read on every query but written rarely (startup + hot reload). `Dash
 ### Local Development
 ```bash
 # Prerequisites
-ollama pull qwen3-coder:30b             # Local LLM (recommended model)
+ollama pull Qwen3.8:latest             # Local LLM (recommended model)
 ollama serve                            # Start Ollama on host
 mongod --dbpath /tmp/mongo              # MongoDB
 
@@ -538,7 +538,7 @@ services:
       MONGO_URI: mongodb://mongo:27017
       MONGO_DB_NAME: movies
       OLLAMA_URL: http://host.docker.internal:11434
-      OLLAMA_MODEL: qwen3-coder:30b
+      OLLAMA_MODEL: Qwen3.8:latest
     ports: ["3000:3000"]
 
   mongo:

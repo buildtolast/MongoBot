@@ -2,7 +2,7 @@
 //!
 //! These tests require:
 //! - MongoDB running at localhost:27017 with the "movies" database populated
-//! - Ollama running at localhost:11434 with qwen3-coder:30b model
+//! - Ollama running at localhost:11434 with Qwen3.8:latest model
 //! - The bot server running at localhost:3000
 //!
 //! Run with: cargo test --test integration_tests -- --test-threads=1
@@ -15,7 +15,7 @@ const BASE_URL: &str = "http://localhost:3000";
 /// Helper: send a query to the API and return the parsed JSON response.
 /// Honours TEST_MODEL and TEST_PROVIDER env vars to target a specific provider/model.
 async fn query(text: &str) -> Value {
-    let model = std::env::var("TEST_MODEL").unwrap_or_else(|_| "qwen3-coder:30b".to_string());
+    let model = std::env::var("TEST_MODEL").unwrap_or_else(|_| "Qwen3.8:latest".to_string());
     let provider = std::env::var("TEST_PROVIDER").ok();
     query_with_model_and_provider(text, &model, provider.as_deref()).await
 }
@@ -312,7 +312,7 @@ async fn insert_actor_requires_confirmation() {
 
 #[tokio::test]
 async fn query_with_explicit_model() {
-    let r = query_with_model("show all movies", "qwen3-coder:30b").await;
+    let r = query_with_model("show all movies", "Qwen3.8:latest").await;
     assert_response_structure(&r);
     assert_eq!(parsed_collection(&r), "movies");
     assert!(result_count(&r) >= 1);
@@ -455,7 +455,7 @@ async fn raw_llm_response_contains_collection() {
 #[tokio::test]
 async fn preview_mode_includes_raw_llm_response() {
     let client = reqwest::Client::new();
-    let model = std::env::var("TEST_MODEL").unwrap_or_else(|_| "qwen3-coder:30b".to_string());
+    let model = std::env::var("TEST_MODEL").unwrap_or_else(|_| "Qwen3.8:latest".to_string());
     let provider = std::env::var("TEST_PROVIDER").ok();
     let mut body = json!({ "query": "find all movies", "model": model, "preview": true });
     if let Some(p) = provider {
@@ -489,7 +489,7 @@ async fn feedback_submit_like() {
         "feedback": "liked",
         "nl_query": "show me all movies",
         "provider": "ollama",
-        "model": "qwen3-coder:30b",
+        "model": "Qwen3.8:latest",
         "raw_llm_response": "{}",
         "parsed_query": {
             "collection": "movies",
@@ -731,7 +731,7 @@ async fn phase2_feedback_retrieval_smoke() {
     );
 
     // Submit a SIMILAR (not identical) query to exercise find_similar_feedback.
-    let model = std::env::var("TEST_MODEL").unwrap_or_else(|_| "qwen3-coder:30b".to_string());
+    let model = std::env::var("TEST_MODEL").unwrap_or_else(|_| "Qwen3.8:latest".to_string());
     let provider = std::env::var("TEST_PROVIDER").ok();
     let similar_query = format!("show users called alpha {unique}");
     let mut query_body = json!({ "query": similar_query, "model": model });

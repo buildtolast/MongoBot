@@ -97,10 +97,10 @@
                     if (model.default) { opt.selected = true; hasDefault = true; }
                     select.appendChild(opt);
                 });
-                // If no model marked default, select qwen3-coder:30b if present
+                // If no model marked default, select Qwen3.8:latest if present
                 if (!hasDefault) {
                     for (var i = 0; i < select.options.length; i++) {
-                        if (select.options[i].value === 'qwen3-coder:30b') {
+                        if (select.options[i].value === 'Qwen3.8:latest') {
                             select.selectedIndex = i;
                             break;
                         }

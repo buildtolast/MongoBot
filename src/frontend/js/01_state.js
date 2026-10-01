@@ -9,7 +9,7 @@ var AppState = {
     lastResults: null,
     lastDocs: null,
     currentProvider: 'ollama',
-    currentModel: 'qwen3-coder:30b',
+    currentModel: 'Qwen3.8:latest',
     lastSchemaSnapshot: '',
     queryHistory: [],
     currentPage: 1,

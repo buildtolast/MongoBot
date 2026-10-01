@@ -79,7 +79,7 @@ All settings can be set via environment variables or CLI flags. Copy `.env.examp
 | `MONGO_DB_NAME` | **(required)** | Database to query |
 | `LLM_PROVIDER` | `ollama` | LLM backend (`ollama`, `lmstudio`, `anthropic`, `openai`) |
 | `OLLAMA_URL` | `http://localhost:11434` | Ollama API endpoint |
-| `OLLAMA_MODEL` | `qwen3-coder:30b` | Ollama model for NL parsing (recommended) |
+| `OLLAMA_MODEL` | `Qwen3.8:latest` | Ollama model for NL parsing (recommended) |
 | `LMSTUDIO_URL` | `http://localhost:1234` | LM Studio API endpoint (OpenAI-compatible) |
 | `LMSTUDIO_MODEL` | -- | LM Studio model name (auto-detected if not set) |
 | `LLAMACPP_URL` | `http://localhost:8080` | llama.cpp server URL (OpenAI-compatible) |
@@ -102,7 +102,7 @@ Slack configuration is optional. The web UI works standalone without it.
 
 ## Architecture
 
-The server is built on actix-web 4 (with actix-cors for CORS preflight handling) and an embedded vanilla JS/HTML frontend assembled at compile time via `build.rs` (single binary, no Node.js). Natural language queries are parsed by one of 5 LLM providers (Ollama default, LM Studio, llama.cpp, Anthropic Claude, OpenAI GPT), validated by a safety checker and query advisor (25 rules), and executed against MongoDB. Full aggregate pipeline support (`$group`, `$lookup`, `$unwind`, `$bucket`, `$facet`) with structured type-safe models. Both the Web UI and Slack bot share the same query processing pipeline. Default model: `qwen3-coder:30b` (recommended), `qwen3:8b` (fast alternative).
+The server is built on actix-web 4 (with actix-cors for CORS preflight handling) and an embedded vanilla JS/HTML frontend assembled at compile time via `build.rs` (single binary, no Node.js). Natural language queries are parsed by one of 5 LLM providers (Ollama default, LM Studio, llama.cpp, Anthropic Claude, OpenAI GPT), validated by a safety checker and query advisor (25 rules), and executed against MongoDB. Full aggregate pipeline support (`$group`, `$lookup`, `$unwind`, `$bucket`, `$facet`) with structured type-safe models. Both the Web UI and Slack bot share the same query processing pipeline. Default model: `Qwen3.8:latest` (reliable on multi-collection joins).
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed diagrams, data flows, and design decisions.
 
@@ -155,7 +155,7 @@ The compose stack includes the bot and MongoDB 7. **Ollama runs on the host mach
 
 ```bash
 # On the host machine (not in Docker):
-ollama pull qwen3-coder:30b
+ollama pull Qwen3.8:latest
 ollama serve
 
 # Then start the Docker stack:
@@ -212,7 +212,7 @@ tests/              -- integration tests
 - [x] **Fix: write queries in approve mode** -- backup confirmation modal now shown for write ops in preview
 - [x] **Fix: preview mode for writes** -- falls through to write handler so backup data is available
 - [x] **Advisory rule renamed** -- `ELEMMATCH_USED` -> `DOTTED_PREFIX_GROUP` (reflects schema-aware behavior)
-- [x] **Model dropdown sort** -- default model sorted first, fallback to `qwen3-coder:30b`
+- [x] **Model dropdown sort** -- default model sorted first, fallback to `Qwen3.8:latest`
 - [x] **`--docker-clean` option** -- full Docker rebuild without cache via `run.sh --docker-clean`
 - [x] **Client-side CSV/JSON export** -- builds files from cached results in browser, no server round-trip or LLM re-query
 - [x] **`gemma4:31b` model verified** -- 100% (40/40) integration tests pass (~4s/query)
