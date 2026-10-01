@@ -78,6 +78,12 @@ print_help() {
     echo "  QUERY_ONLY              Parse queries without executing (default: false)"
     echo "  RUST_LOG                Log level (default: info)"
     echo ""
+    echo "Docker seeding (--docker / --docker-clean):"
+    echo "  SEED                    Load sample data when missing (default: true; false to skip)"
+    echo "  FORCE_SEED              Regenerate seeded collections on start (default: false)"
+    echo "  MFLIX_DIR               Directory containing movies.json"
+    echo "                          (default: ../mongodb-sample-dataset/sample_mflix)"
+    echo ""
 }
 
 print_config() {
@@ -113,6 +119,7 @@ check_mongo_db() {
 run_cargo() {
     check_mongo_db
     print_config
+    verify_dependencies
 
     echo -e "${GREEN}Starting from source with cargo...${NC}"
     echo -e "Dashboard will be at: ${CYAN}http://${HOST}:${PORT}${NC}"
@@ -147,6 +154,17 @@ run_cargo() {
         ARGS="${ARGS} --query-only"
     fi
 
+    # Verify in the background once the server answers (first build can be slow).
+    (
+        for _ in $(seq 1 150); do
+            curl -s --max-time 2 "http://localhost:${PORT}/api/health" >/dev/null && break
+            sleep 2
+        done
+        verify_services cargo || true
+    ) &
+    VERIFY_PID=$!
+    trap 'kill "$VERIFY_PID" 2>/dev/null || true' EXIT
+
     # shellcheck disable=SC2086
     cargo run -- ${ARGS}
 }
@@ -171,7 +189,8 @@ run_docker() {
     echo ""
     echo -e "View logs: ${YELLOW}docker compose logs -f bot${NC}"
 
-    verify_build
+    verify_build || true
+    verify_services docker
 }
 
 run_stop() {
@@ -237,6 +256,134 @@ verify_build() {
     return 1
 }
 
+# ── Service verification ────────────────────────────────────────────────────
+
+VERIFY_FAILED=0
+
+# Print "host port" for an http(s):// or mongodb:// URL.
+url_host_port() {
+    local rest="${1#*://}"
+    rest="${rest%%/*}"
+    rest="${rest##*@}"
+    local host="${rest%%:*}" port="${rest##*:}"
+    if [ "$port" = "$rest" ]; then
+        case "$1" in
+            https://*) port=443 ;;
+            mongodb://*) port=27017 ;;
+            *) port=80 ;;
+        esac
+    fi
+    echo "$host $port"
+}
+
+# report <PASS|WARN|FAIL> <service> <detail>
+report() {
+    case "$1" in
+        PASS) echo -e "  ${GREEN}PASS${NC}  $2 — $3" ;;
+        WARN) echo -e "  ${YELLOW}WARN${NC}  $2 — $3" ;;
+        *)    echo -e "  ${RED}FAIL${NC}  $2 — $3"; VERIFY_FAILED=1 ;;
+    esac
+}
+
+# check_port <service> <url> <level-on-failure>
+check_port() {
+    local hp host port
+    hp=$(url_host_port "$2")
+    host="${hp% *}"
+    port="${hp#* }"
+    if nc -z -w 2 "$host" "$port" >/dev/null 2>&1; then
+        report PASS "$1" "${host}:${port} reachable"
+    else
+        report "$3" "$1" "${host}:${port} not reachable"
+    fi
+}
+
+# URL of the configured LLM provider, empty for cloud providers.
+llm_endpoint() {
+    case "$LLM_PROVIDER" in
+        ollama) echo "$OLLAMA_URL" ;;
+        llamacpp) echo "$LLAMACPP_URL" ;;
+        lmstudio) echo "${LMSTUDIO_URL:-http://localhost:1234}" ;;
+        *) echo "" ;;
+    esac
+}
+
+check_llm() {
+    local url
+    url=$(llm_endpoint)
+    if [ -n "$url" ]; then
+        # Without an LLM the server still runs; only NL queries fail.
+        check_port "LLM (${LLM_PROVIDER})" "$url" WARN
+    else
+        report PASS "LLM (${LLM_PROVIDER})" "cloud provider, no local port"
+    fi
+}
+
+# Before `cargo run`: the server exits if MongoDB is unreachable, so fail fast.
+verify_dependencies() {
+    echo -e "${YELLOW}Checking dependencies...${NC}"
+    VERIFY_FAILED=0
+    check_port "MongoDB" "$MONGO_URI" FAIL
+    check_llm
+    echo ""
+    if [ "$VERIFY_FAILED" -ne 0 ]; then
+        echo -e "${RED}MongoDB is not reachable at ${MONGO_URI}.${NC}"
+        echo -e "Start it with: ${CYAN}docker compose up -d mongo${NC} (or use ${CYAN}./run.sh --docker${NC})"
+        exit 1
+    fi
+}
+
+# After startup: every port plus the bot's own view of its dependencies.
+verify_services() {
+    local mode="$1"
+    echo ""
+    echo -e "${YELLOW}Verifying services...${NC}"
+    VERIFY_FAILED=0
+
+    if [ "$mode" = "docker" ]; then
+        local seed_exit
+        seed_exit=$(docker compose ps -a --format '{{.ExitCode}}' seed 2>/dev/null || true)
+        if [ "$seed_exit" = "0" ]; then
+            report PASS "Seed" "completed"
+        else
+            report FAIL "Seed" "exit code ${seed_exit:-unknown} (docker compose logs seed)"
+        fi
+    fi
+
+    check_port "MongoDB" "$MONGO_URI" FAIL
+    check_llm
+    check_port "Bot" "http://localhost:${PORT}" FAIL
+
+    local code health
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://localhost:${PORT}/" || true)
+    if [ "$code" = "200" ]; then
+        report PASS "Web UI" "http://localhost:${PORT}/ returned 200"
+    else
+        report FAIL "Web UI" "http://localhost:${PORT}/ returned ${code:-no response}"
+    fi
+
+    health=$(curl -s --max-time 5 "http://localhost:${PORT}/api/health" || true)
+    if echo "$health" | grep -q '"mongo":true'; then
+        report PASS "Bot -> MongoDB" "connected"
+    else
+        report FAIL "Bot -> MongoDB" "not connected (${health:-no response})"
+    fi
+    if [ "$LLM_PROVIDER" = "ollama" ]; then
+        if echo "$health" | grep -q '"ollama":true'; then
+            report PASS "Bot -> Ollama" "connected"
+        else
+            report WARN "Bot -> Ollama" "not reachable from the bot; NL queries will fail"
+        fi
+    fi
+
+    echo ""
+    if [ "$VERIFY_FAILED" -ne 0 ]; then
+        echo -e "${RED}One or more services failed verification.${NC}"
+        return 1
+    fi
+    echo -e "${GREEN}All services verified.${NC}"
+}
+
 run_restart() {
     echo -e "${CYAN}═══════════════════════════════════════════════════${NC}"
     echo -e "${CYAN}  SlackMongoBot — Restart${NC}"
@@ -247,7 +394,8 @@ run_restart() {
         echo -e "${YELLOW}Docker Compose detected — rebuilding...${NC}"
         docker compose up -d --build
         echo -e "${GREEN}Containers rebuilt and restarted.${NC}"
-        verify_build
+        verify_build || true
+        verify_services docker
     elif pgrep -f "target/(debug|release)/${APP_NAME}" > /dev/null 2>&1; then
         echo -e "${YELLOW}Cargo process detected — stopping...${NC}"
         pkill -f "target/(debug|release)/${APP_NAME}" || true
@@ -282,7 +430,8 @@ case "${1:-}" in
         echo -e "  Ollama:  ${CYAN}http://localhost:11434${NC} (host machine)"
         echo ""
         echo -e "View logs: ${YELLOW}docker compose logs -f bot${NC}"
-        verify_build
+        verify_build || true
+        verify_services docker
         ;;
     --build)
         echo -e "${CYAN}═══════════════════════════════════════════════════${NC}"

@@ -19,9 +19,26 @@ services:
       MAX_RESULT_ROWS: "10000"
       ALLOWED_OPERATIONS: find,count,distinct,aggregate,insert,update
     depends_on:
+      seed:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # One-shot: imports movies and generates the other collections when missing,
+  # so the bot introspects a populated database on startup.
+  seed:
+    image: mongo:7
+    entrypoint: ["sh", "/scripts/seed-if-empty.sh"]
+    environment:
+      MONGO_DB_NAME: movies
+      SEED: ${SEED:-true}
+      FORCE_SEED: ${FORCE_SEED:-false}
+    volumes:
+      - ./scripts:/scripts:ro
+      - ${MFLIX_DIR:-../mongodb-sample-dataset/sample_mflix}:/seed:ro
+    depends_on:
       mongo:
         condition: service_started
-    restart: unless-stopped
+    restart: "no"
 
   mongo:
     image: mongo:7
